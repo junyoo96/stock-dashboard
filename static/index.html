@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>주식 대시보드</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial/dist/chartjs-chart-financial.js"></script>
+</head>
+<body>
+  <div class="sticky-top">
+    <header>
+      <div class="header-inner">
+        <span class="logo">주식 대시보드</span>
+        <div class="search-wrap">
+          <input id="searchInput" type="text" placeholder="종목 검색 (예: AAPL, 삼성전자, 005930.KS)..." autocomplete="off" />
+          <div id="searchDropdown" class="dropdown hidden"></div>
+        </div>
+        <div class="ctrl">
+          <span id="timerLabel" class="timer-label">60초 후 갱신</span>
+          <button id="refreshBtn">새로고침</button>
+        </div>
+      </div>
+    </header>
+    <div class="index-bar">
+      <div id="indexRow" class="index-row"></div>
+    </div>
+    <div class="sector-bar">
+      <div id="sectorRow" class="sector-row"></div>
+    </div>
+  </div>
+
+  <main>
+    <div class="sector-chart-section">
+      <div class="scs-header" id="sectorChartToggle">
+        <span class="scs-title">섹터 ETF 수익률 추이 <span class="scs-sub">(기준=100)</span></span>
+        <div class="scs-periods">
+          <button class="scs-pbtn" data-p="1mo">1개월</button>
+          <button class="scs-pbtn" data-p="3mo">3개월</button>
+          <button class="scs-pbtn" data-p="6mo">6개월</button>
+          <button class="scs-pbtn active" data-p="1y">1년</button>
+          <button class="scs-pbtn" data-p="3y">3년</button>
+          <button class="scs-pbtn" data-p="5y">5년</button>
+        </div>
+        <span class="scs-arrow">▾</span>
+      </div>
+      <div class="scs-body" id="sectorChartBody">
+        <div class="scs-chart-wrap">
+          <canvas id="sectorChartCanvas"></canvas>
+        </div>
+        <div id="sectorChartLegend" class="scs-legend"></div>
+      </div>
+    </div>
+
+    <div class="macro-section">
+      <div class="macro-header">
+        <span class="macro-title">거시경제 지표</span>
+        <div class="macro-search-wrap">
+          <input id="macroSearchInput" type="text" placeholder="지표 검색 (예: 금리, VIX, 원유...)" autocomplete="off" />
+          <div id="macroDropdown" class="dropdown hidden"></div>
+        </div>
+      </div>
+      <div id="macroRow" class="macro-row"></div>
+    </div>
+
+    <div id="grid" class="grid"></div>
+    <p id="empty" class="empty-hint">위 검색창에서 종목을 검색하고 추가해보세요.<br /><small>예: AAPL, TSLA, 005930.KS (삼성전자), 035720.KS (카카오)</small></p>
+  </main>
+
+  <div id="overlay" class="overlay hidden"></div>
+  <div id="modal" class="modal hidden">
+    <div class="modal-head">
+      <div class="modal-title-wrap">
+        <span id="modalSymbol" class="modal-symbol"></span>
+        <span id="modalName" class="modal-name"></span>
+      </div>
+      <div class="modal-btns">
+        <button class="pbtn active" data-p="5d">5일</button>
+        <button class="pbtn" data-p="1mo">1개월</button>
+        <button class="pbtn" data-p="3mo">3개월</button>
+        <button class="pbtn" data-p="1y">1년</button>
+        <button id="closeModal" class="close-x">✕</button>
+      </div>
+    </div>
+    <div id="modalStats" class="modal-stats"></div>
+    <div id="modalPE" class="modal-pe"></div>
+    <div class="chart-wrap">
+      <canvas id="chartCanvas"></canvas>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
