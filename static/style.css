@@ -128,19 +128,18 @@ header {
 .header-inner {
   max-width: 1400px;
   margin: 0 auto;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 18px;
-  justify-content: space-between;
-}
-
-.header-inner .logo {
-  flex: 1;
 }
 
 .header-inner .ctrl {
-  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   justify-content: flex-end;
+  white-space: nowrap;
 }
 
 .logo {
@@ -153,8 +152,7 @@ header {
 /* ─── Search ─── */
 .search-wrap {
   position: relative;
-  flex: 2;
-  max-width: 480px;
+  width: 480px;
 }
 
 #searchInput {
@@ -234,7 +232,6 @@ header {
   align-items: center;
   gap: 12px;
   white-space: nowrap;
-  margin-left: auto;
 }
 
 .timer-label {
