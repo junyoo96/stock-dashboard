@@ -70,6 +70,14 @@ async function loadSectorChart(period = '1y') {
           type: 'timeseries',
           grid: { color: '#252836' },
           ticks: { color: '#7b7f97', maxTicksLimit: 10, font: { size: 10 } },
+          time: {
+            displayFormats: {
+              day:   'yy.MM.dd',
+              week:  'yy.MM.dd',
+              month: 'yyyy.MM',
+              year:  'yyyy',
+            },
+          },
         },
         y: {
           position: 'right',
