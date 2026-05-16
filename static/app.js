@@ -1,3 +1,151 @@
+const STOCK_CHART_COLORS = [
+  '#4d96ff', '#ff6b6b', '#69db7c', '#ffd93d', '#cc5de8',
+  '#ff922b', '#74c0fc', '#f06595', '#a9e34b', '#20c997',
+  '#ff8787', '#63e6be', '#e599f7', '#ffec99', '#a5d8ff',
+];
+
+let graphViewChartInstance = null;
+let graphViewCurrentPeriod = '1d';
+
+function initGraphView() {
+  document.getElementById('graphViewBtn').addEventListener('click', toggleGraphView);
+  document.getElementById('graphBackBtn').addEventListener('click', toggleGraphView);
+  document.querySelectorAll('.gv-pbtn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.gv-pbtn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      graphViewCurrentPeriod = btn.dataset.p;
+      loadGraphView(graphViewCurrentPeriod);
+    });
+  });
+}
+
+function toggleGraphView() {
+  const main      = document.querySelector('main');
+  const graphView = document.getElementById('graphView');
+  const btn       = document.getElementById('graphViewBtn');
+  const showing   = !graphView.classList.contains('hidden');
+  if (showing) {
+    graphView.classList.add('hidden');
+    main.classList.remove('hidden');
+    btn.classList.remove('active');
+  } else {
+    main.classList.add('hidden');
+    graphView.classList.remove('hidden');
+    btn.classList.add('active');
+    loadGraphView(graphViewCurrentPeriod);
+  }
+}
+
+async function loadGraphView(period) {
+  const legend = document.getElementById('graphViewLegend');
+  if (!stocks.length) {
+    legend.innerHTML = '';
+    if (graphViewChartInstance) { graphViewChartInstance.destroy(); graphViewChartInstance = null; }
+    const wrap = document.querySelector('.gv-chart-wrap');
+    if (wrap) wrap.innerHTML = '<canvas id="graphViewCanvas"></canvas><p class="gv-empty">추가된 종목이 없습니다.<br>대시보드에서 종목을 먼저 추가해주세요.</p>';
+    return;
+  }
+
+  legend.innerHTML = '<span style="color:var(--muted);font-size:0.85rem">로딩 중...</span>';
+
+  const results = await Promise.allSettled(
+    stocks.map(async s => {
+      const res = await fetch(`/api/chart/${encodeURIComponent(s.symbol)}?period=${period}`);
+      if (!res.ok) throw new Error();
+      const d = await res.json();
+      return { symbol: s.symbol, name: s.name, data: d };
+    })
+  );
+
+  const valid = results
+    .filter(r => r.status === 'fulfilled' && r.value.data.dates?.length)
+    .map(r => r.value);
+
+  if (!valid.length) {
+    legend.innerHTML = '<span style="color:var(--muted)">데이터를 불러올 수 없습니다.</span>';
+    return;
+  }
+
+  const datasets = valid.map(({ symbol, data }, i) => {
+    const base = data.close[0];
+    return {
+      label: symbol,
+      data: data.dates.map((d, j) => ({
+        x: new Date(d).getTime(),
+        y: base > 0 ? +(data.close[j] / base * 100).toFixed(2) : null,
+      })),
+      borderColor: STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length],
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.2,
+    };
+  });
+
+  const ctx = document.getElementById('graphViewCanvas');
+  if (graphViewChartInstance) { graphViewChartInstance.destroy(); graphViewChartInstance = null; }
+
+  graphViewChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(2)}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'timeseries',
+          grid: { color: '#252836' },
+          ticks: { color: '#7b7f97', maxTicksLimit: 10, font: { size: 10 } },
+          time: {
+            displayFormats: {
+              minute: 'HH:mm',
+              hour:   'HH:mm',
+              day:    'MM/dd',
+              week:   'yy.MM.dd',
+              month:  'yyyy.MM',
+              year:   'yyyy',
+            },
+          },
+        },
+        y: {
+          position: 'right',
+          grid: { color: '#252836' },
+          ticks: {
+            color: '#7b7f97',
+            font: { size: 10 },
+            callback: v => v.toFixed(1),
+          },
+        },
+      },
+    },
+  });
+
+  legend.innerHTML = valid.map(({ symbol, name, data }, i) => {
+    const first = data.close[0];
+    const last  = data.close[data.close.length - 1];
+    const ret   = first > 0 ? (last - first) / first * 100 : 0;
+    const sign  = ret >= 0 ? '+' : '';
+    const state = ret > 0 ? 'up' : ret < 0 ? 'down' : 'flat';
+    return `
+      <div class="gv-legend-item">
+        <span class="gv-ld" style="background:${STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length]}"></span>
+        <span class="gv-ls">${symbol}</span>
+        <span class="gv-lr ${state}">${sign}${ret.toFixed(2)}%</span>
+        <span class="gv-ln">${name || ''}</span>
+      </div>`;
+  }).join('');
+}
+
 const SECTOR_COLORS = {
   XLRE: '#ff8787', XLU: '#74c0fc', XLC: '#cc5de8', XLK: '#4d96ff',
   XLF:  '#ffd93d', XLV: '#6bcb77', XLI: '#ff922b', XLP: '#f06595',
@@ -305,6 +453,7 @@ let usdKrwRate = null;
 
 // ─── Init ───────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  initGraphView();
   initSectorChartToggle();
   loadSectorChart();
   initIndexBar();

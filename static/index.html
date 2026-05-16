@@ -14,7 +14,10 @@
   <div class="sticky-top">
     <header>
       <div class="header-inner">
-        <span class="logo">주식 대시보드</span>
+        <div class="header-left">
+          <span class="logo">주식 대시보드</span>
+          <button id="graphViewBtn" class="graph-btn">그래프</button>
+        </div>
         <div class="search-wrap">
           <input id="searchInput" type="text" placeholder="종목 검색 (예: AAPL, 삼성전자, 005930.KS)..." autocomplete="off" />
           <div id="searchDropdown" class="dropdown hidden"></div>
@@ -69,6 +72,27 @@
     <div id="grid" class="grid"></div>
     <p id="empty" class="empty-hint">위 검색창에서 종목을 검색하고 추가해보세요.<br /><small>예: AAPL, TSLA, 005930.KS (삼성전자), 035720.KS (카카오)</small></p>
   </main>
+
+  <div id="graphView" class="graph-view hidden">
+    <div class="gv-toolbar">
+      <button id="graphBackBtn" class="gv-back">← 대시보드</button>
+      <div class="gv-periods">
+        <button class="gv-pbtn active" data-p="1d">1일</button>
+        <button class="gv-pbtn" data-p="5d">7일</button>
+        <button class="gv-pbtn" data-p="1mo">1개월</button>
+        <button class="gv-pbtn" data-p="3mo">3개월</button>
+        <button class="gv-pbtn" data-p="6mo">6개월</button>
+        <button class="gv-pbtn" data-p="1y">1년</button>
+        <button class="gv-pbtn" data-p="5y">5년</button>
+      </div>
+    </div>
+    <div class="gv-body">
+      <div class="gv-chart-wrap">
+        <canvas id="graphViewCanvas"></canvas>
+      </div>
+      <div id="graphViewLegend" class="gv-legend"></div>
+    </div>
+  </div>
 
   <div id="overlay" class="overlay hidden"></div>
   <div id="modal" class="modal hidden">
