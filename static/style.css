@@ -1037,20 +1037,44 @@ main {
 }
 
 .gv-legend-item {
-  display: grid;
-  grid-template-columns: 16px 1fr auto;
-  grid-template-rows: auto auto;
-  column-gap: 8px;
-  row-gap: 1px;
+  display: flex;
   align-items: center;
+  gap: 6px;
+  transition: opacity 0.15s;
 }
 
+.gv-eye-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity 0.15s, color 0.15s;
+}
+.gv-eye-btn:hover { opacity: 1; color: var(--text); }
+
+.gv-item-hidden .gv-eye-btn { opacity: 0.4; color: var(--muted); }
+.gv-item-hidden .gv-ld,
+.gv-item-hidden .gv-legend-text,
+.gv-item-hidden .gv-lr { opacity: 0.25; }
+
 .gv-ld {
-  grid-row: 1 / 3;
-  width: 12px;
+  width: 14px;
   height: 3px;
   border-radius: 2px;
-  align-self: center;
+  flex-shrink: 0;
+}
+
+.gv-legend-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
 }
 
 .gv-ls {
@@ -1062,14 +1086,13 @@ main {
 .gv-lr {
   font-size: 0.82rem;
   font-weight: 700;
-  text-align: right;
+  white-space: nowrap;
 }
 .gv-lr.up   { color: var(--green); }
 .gv-lr.down { color: var(--red); }
 .gv-lr.flat { color: var(--muted); }
 
 .gv-ln {
-  grid-column: 2;
   font-size: 0.73rem;
   color: var(--muted);
   white-space: nowrap;

@@ -1,3 +1,8 @@
+const EYE_OPEN = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_CLOSED = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
+const hiddenGraphStocks = new Set();
+
 const STOCK_CHART_COLORS = [
   '#4d96ff', '#ff6b6b', '#69db7c', '#ffd93d', '#cc5de8',
   '#ff922b', '#74c0fc', '#f06595', '#a9e34b', '#20c997',
@@ -18,6 +23,7 @@ function hideAllViews() {
   document.getElementById('stockChartsViewBtn').classList.remove('active');
   Object.values(stockChartsInstances).forEach(c => c?.destroy());
   stockChartsInstances = {};
+  hiddenGraphStocks.clear();
 }
 
 function initGraphView() {
@@ -30,6 +36,26 @@ function initGraphView() {
       graphViewCurrentPeriod = btn.dataset.p;
       loadGraphView(graphViewCurrentPeriod);
     });
+  });
+
+  document.getElementById('graphViewLegend').addEventListener('click', e => {
+    const btn = e.target.closest('.gv-eye-btn');
+    if (!btn || !graphViewChartInstance) return;
+    const sym = btn.dataset.symbol;
+    const idx = +btn.dataset.idx;
+    const nowVisible = graphViewChartInstance.isDatasetVisible(idx);
+    graphViewChartInstance.setDatasetVisibility(idx, !nowVisible);
+    graphViewChartInstance.update();
+    const item = btn.closest('.gv-legend-item');
+    if (nowVisible) {
+      hiddenGraphStocks.add(sym);
+      btn.innerHTML = EYE_CLOSED;
+      item.classList.add('gv-item-hidden');
+    } else {
+      hiddenGraphStocks.delete(sym);
+      btn.innerHTML = EYE_OPEN;
+      item.classList.remove('gv-item-hidden');
+    }
   });
 }
 
@@ -228,6 +254,7 @@ async function loadGraphView(period) {
       borderWidth: 2,
       pointRadius: 0,
       tension: 0.2,
+      hidden: hiddenGraphStocks.has(symbol),
     };
   });
 
@@ -282,18 +309,22 @@ async function loadGraphView(period) {
     const first = data.close[0];
     const last  = data.close[data.close.length - 1];
     const ret   = first > 0 ? (last - first) / first * 100 : 0;
-    return { symbol, name, ret, color: STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length] };
+    return { symbol, name, ret, color: STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length], datasetIdx: i };
   }).sort((a, b) => b.ret - a.ret);
 
-  legend.innerHTML = legendItems.map(({ symbol, name, ret, color }) => {
-    const sign  = ret >= 0 ? '+' : '';
-    const state = ret > 0 ? 'up' : ret < 0 ? 'down' : 'flat';
+  legend.innerHTML = legendItems.map(({ symbol, name, ret, color, datasetIdx }) => {
+    const sign    = ret >= 0 ? '+' : '';
+    const state   = ret > 0 ? 'up' : ret < 0 ? 'down' : 'flat';
+    const isHidden = hiddenGraphStocks.has(symbol);
     return `
-      <div class="gv-legend-item">
+      <div class="gv-legend-item${isHidden ? ' gv-item-hidden' : ''}">
+        <button class="gv-eye-btn" data-symbol="${symbol}" data-idx="${datasetIdx}" title="숨기기/보이기">${isHidden ? EYE_CLOSED : EYE_OPEN}</button>
         <span class="gv-ld" style="background:${color}"></span>
-        <span class="gv-ls">${symbol}</span>
+        <div class="gv-legend-text">
+          <span class="gv-ls">${symbol}</span>
+          <span class="gv-ln">${name || ''}</span>
+        </div>
         <span class="gv-lr ${state}">${sign}${ret.toFixed(2)}%</span>
-        <span class="gv-ln">${name || ''}</span>
       </div>`;
   }).join('');
 }
