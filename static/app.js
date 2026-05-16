@@ -10,7 +10,7 @@ function updateInvestResult() {
   const resultEl = document.getElementById('gvInvestResult');
   if (!input || !resultEl) return;
 
-  const amount = parseFloat(input.value);
+  const amount = parseFloat(input.value.replace(/,/g, ''));
   if (!amount || amount <= 0) { resultEl.classList.add('hidden'); return; }
 
   const active = [..._graphReturns.entries()]
@@ -87,7 +87,11 @@ function initGraphView() {
     });
   });
 
-  document.getElementById('gvInvestAmount').addEventListener('input', updateInvestResult);
+  document.getElementById('gvInvestAmount').addEventListener('input', e => {
+    const raw = e.target.value.replace(/[^0-9]/g, '');
+    e.target.value = raw ? parseInt(raw, 10).toLocaleString('ko-KR') : '';
+    updateInvestResult();
+  });
 
   document.getElementById('graphViewLegend').addEventListener('click', e => {
     if (!graphViewChartInstance) return;
