@@ -1062,6 +1062,28 @@ main {
 .gv-item-hidden .gv-legend-text,
 .gv-item-hidden .gv-lr { opacity: 0.25; }
 
+.gv-legend-ctrl {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gv-ctrl-btn {
+  flex: 1;
+  padding: 4px 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 0.73rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.gv-ctrl-btn:hover { color: var(--text); border-color: var(--text); }
+
 .gv-ld {
   width: 14px;
   height: 3px;
