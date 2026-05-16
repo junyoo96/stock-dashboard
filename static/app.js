@@ -124,34 +124,47 @@ async function loadStockChartsView(period) {
       const ctx = document.getElementById(`scv-canvas-${id}`);
       if (!ctx) return;
 
-      const isUp = last >= first;
       stockChartsInstances[s.symbol] = new Chart(ctx, {
-        type: 'line',
+        type: 'candlestick',
         data: {
           datasets: [{
-            data: data.dates.map((d, i) => ({ x: new Date(d).getTime(), y: data.close[i] })),
-            borderColor: isUp ? '#00d17a' : '#ff4655',
-            backgroundColor: isUp ? 'rgba(0,209,122,0.06)' : 'rgba(255,70,85,0.06)',
-            fill: true,
-            borderWidth: 1.5,
-            pointRadius: 0,
-            tension: 0.3,
+            data: data.dates.map((d, i) => ({
+              x: new Date(d).getTime(),
+              o: data.open[i],
+              h: data.high[i],
+              l: data.low[i],
+              c: data.close[i],
+            })),
+            color: {
+              up:        '#ef5350',
+              down:      '#1e88e5',
+              unchanged: '#888888',
+            },
           }],
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: c => {
+                  const r = c.raw;
+                  return [`시가 ${formatPrice(r.o, cur)}`, `고가 ${formatPrice(r.h, cur)}`, `저가 ${formatPrice(r.l, cur)}`, `종가 ${formatPrice(r.c, cur)}`];
+                },
+              },
+            },
+          },
           scales: {
             x: {
               type: 'timeseries',
               grid: { display: false },
               ticks: {
                 color: '#7b7f97', font: { size: 9 }, maxTicksLimit: 5,
-                display: true,
               },
               time: {
-                displayFormats: { minute: 'HH:mm', hour: 'HH:mm', day: 'MM/dd', month: 'yyyy.MM' },
+                displayFormats: { minute: 'HH:mm', hour: 'HH:mm', day: 'MM/dd', month: 'yyyy.MM', year: 'yyyy' },
               },
             },
             y: {
