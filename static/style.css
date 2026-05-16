@@ -1129,6 +1129,97 @@ main {
   font-size: 0.92rem;
 }
 
+/* ─── 투자 수익 계산 ─── */
+.gv-invest-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.gv-invest-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.gv-invest-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.gv-invest-input-wrap {
+  display: flex;
+  align-items: center;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 14px;
+  gap: 6px;
+  transition: border-color 0.2s;
+}
+.gv-invest-input-wrap:focus-within { border-color: var(--accent); }
+
+.gv-invest-curr { color: var(--muted); font-size: 0.9rem; }
+
+.gv-invest-input {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 0.9rem;
+  padding: 9px 0;
+  width: 200px;
+  outline: none;
+}
+.gv-invest-input::placeholder { color: var(--muted); }
+.gv-invest-input::-webkit-inner-spin-button,
+.gv-invest-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+
+.gv-invest-result { overflow-x: auto; }
+
+.gv-invest-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.gv-invest-table th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.78rem;
+  padding: 6px 14px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.gv-invest-table th:first-child { text-align: left; }
+
+.gv-invest-table td {
+  padding: 9px 14px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.gv-invest-table td:first-child { text-align: left; }
+.gv-invest-table tr:last-child td { border-bottom: none; }
+.gv-invest-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+.gv-invest-table .up   { color: var(--green); font-weight: 600; }
+.gv-invest-table .down { color: var(--red);   font-weight: 600; }
+.gv-invest-table .flat { color: var(--muted); }
+
+.gv-it-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.gv-it-sym  { font-weight: 700; margin-right: 6px; }
+.gv-it-name { color: var(--muted); font-size: 0.78rem; }
+
 /* ─── 종목별 그래프 뷰 ─── */
 .stock-charts-view {
   max-width: 1400px;

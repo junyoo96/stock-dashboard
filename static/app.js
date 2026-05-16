@@ -3,6 +3,54 @@ const EYE_CLOSED = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" 
 
 const hiddenGraphStocks = new Set();
 let _graphValidData = [];
+const _graphReturns = new Map(); // symbol -> { ret, name, color }
+
+function updateInvestResult() {
+  const input    = document.getElementById('gvInvestAmount');
+  const resultEl = document.getElementById('gvInvestResult');
+  if (!input || !resultEl) return;
+
+  const amount = parseFloat(input.value);
+  if (!amount || amount <= 0) { resultEl.classList.add('hidden'); return; }
+
+  const active = [..._graphReturns.entries()]
+    .filter(([sym]) => !hiddenGraphStocks.has(sym))
+    .sort((a, b) => b[1].ret - a[1].ret);
+
+  if (!active.length) { resultEl.classList.add('hidden'); return; }
+
+  const fmt = v => '₩' + Math.round(Math.abs(v)).toLocaleString('ko-KR');
+
+  resultEl.classList.remove('hidden');
+  resultEl.innerHTML = `
+    <table class="gv-invest-table">
+      <thead>
+        <tr>
+          <th>종목</th>
+          <th>수익률</th>
+          <th>투자금액</th>
+          <th>최종금액</th>
+          <th>손익</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${active.map(([sym, { ret, name, color }]) => {
+          const final  = amount * (1 + ret / 100);
+          const profit = final - amount;
+          const sign   = profit >= 0 ? '+' : '-';
+          const state  = profit > 0 ? 'up' : profit < 0 ? 'down' : 'flat';
+          return `
+            <tr>
+              <td><span class="gv-it-dot" style="background:${color}"></span><span class="gv-it-sym">${sym}</span><span class="gv-it-name">${name || ''}</span></td>
+              <td class="${state}">${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%</td>
+              <td>${fmt(amount)}</td>
+              <td class="${state}">${fmt(final)}</td>
+              <td class="${state}">${sign}${fmt(profit)}</td>
+            </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+}
 
 const STOCK_CHART_COLORS = [
   '#4d96ff', '#ff6b6b', '#69db7c', '#ffd93d', '#cc5de8',
@@ -39,6 +87,8 @@ function initGraphView() {
     });
   });
 
+  document.getElementById('gvInvestAmount').addEventListener('input', updateInvestResult);
+
   document.getElementById('graphViewLegend').addEventListener('click', e => {
     if (!graphViewChartInstance) return;
 
@@ -50,6 +100,7 @@ function initGraphView() {
         item.classList.remove('gv-item-hidden');
         item.querySelector('.gv-eye-btn').innerHTML = EYE_OPEN;
       });
+      updateInvestResult();
       return;
     }
 
@@ -63,6 +114,7 @@ function initGraphView() {
         item.classList.add('gv-item-hidden');
         item.querySelector('.gv-eye-btn').innerHTML = EYE_CLOSED;
       });
+      updateInvestResult();
       return;
     }
 
@@ -83,6 +135,7 @@ function initGraphView() {
       btn.innerHTML = EYE_OPEN;
       item.classList.remove('gv-item-hidden');
     }
+    updateInvestResult();
   });
 }
 
@@ -333,13 +386,18 @@ async function loadGraphView(period) {
   });
 
   _graphValidData = valid;
+  _graphReturns.clear();
 
   const legendItems = valid.map(({ symbol, name, data }, i) => {
     const first = data.close[0];
     const last  = data.close[data.close.length - 1];
     const ret   = first > 0 ? (last - first) / first * 100 : 0;
-    return { symbol, name, ret, color: STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length], datasetIdx: i };
+    const color = STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length];
+    _graphReturns.set(symbol, { ret, name, color });
+    return { symbol, name, ret, color, datasetIdx: i };
   }).sort((a, b) => b.ret - a.ret);
+
+  updateInvestResult();
 
   legend.innerHTML = `
     <div class="gv-legend-ctrl">
