@@ -278,15 +278,19 @@ async function loadGraphView(period) {
     },
   });
 
-  legend.innerHTML = valid.map(({ symbol, name, data }, i) => {
+  const legendItems = valid.map(({ symbol, name, data }, i) => {
     const first = data.close[0];
     const last  = data.close[data.close.length - 1];
     const ret   = first > 0 ? (last - first) / first * 100 : 0;
+    return { symbol, name, ret, color: STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length] };
+  }).sort((a, b) => b.ret - a.ret);
+
+  legend.innerHTML = legendItems.map(({ symbol, name, ret, color }) => {
     const sign  = ret >= 0 ? '+' : '';
     const state = ret > 0 ? 'up' : ret < 0 ? 'down' : 'flat';
     return `
       <div class="gv-legend-item">
-        <span class="gv-ld" style="background:${STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length]}"></span>
+        <span class="gv-ld" style="background:${color}"></span>
         <span class="gv-ls">${symbol}</span>
         <span class="gv-lr ${state}">${sign}${ret.toFixed(2)}%</span>
         <span class="gv-ln">${name || ''}</span>
