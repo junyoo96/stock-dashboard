@@ -1083,3 +1083,92 @@ main {
   padding: 80px 0;
   font-size: 0.92rem;
 }
+
+/* ─── 종목별 그래프 뷰 ─── */
+.stock-charts-view {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.scv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.scv-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.scv-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.scv-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scv-card-name {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.scv-card-sym {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.scv-card-vals {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.scv-price {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.scv-ret {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.scv-ret.up   { color: var(--green); }
+.scv-ret.down { color: var(--red); }
+.scv-ret.flat { color: var(--muted); }
+
+.scv-chart-wrap {
+  position: relative;
+  height: 160px;
+}
+
+/* period 버튼은 .gv-pbtn 대신 .scv-pbtn 사용 */
+.scv-pbtn {
+  padding: 5px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.scv-pbtn:hover { color: var(--text); border-color: var(--text); }
+.scv-pbtn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}

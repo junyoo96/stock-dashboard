@@ -6,10 +6,23 @@ const STOCK_CHART_COLORS = [
 
 let graphViewChartInstance = null;
 let graphViewCurrentPeriod = '1d';
+let stockChartsInstances = {};
+let stockChartsCurrentPeriod = '1d';
+
+// ─── 공통: 모든 뷰 숨기고 대시보드 복원 ─────────────────────────
+function hideAllViews() {
+  document.querySelector('main').classList.remove('hidden');
+  document.getElementById('graphView').classList.add('hidden');
+  document.getElementById('stockChartsView').classList.add('hidden');
+  document.getElementById('graphViewBtn').classList.remove('active');
+  document.getElementById('stockChartsViewBtn').classList.remove('active');
+  Object.values(stockChartsInstances).forEach(c => c?.destroy());
+  stockChartsInstances = {};
+}
 
 function initGraphView() {
   document.getElementById('graphViewBtn').addEventListener('click', toggleGraphView);
-  document.getElementById('graphBackBtn').addEventListener('click', toggleGraphView);
+  document.getElementById('graphBackBtn').addEventListener('click', hideAllViews);
   document.querySelectorAll('.gv-pbtn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.gv-pbtn').forEach(b => b.classList.remove('active'));
@@ -21,20 +34,142 @@ function initGraphView() {
 }
 
 function toggleGraphView() {
-  const main      = document.querySelector('main');
-  const graphView = document.getElementById('graphView');
-  const btn       = document.getElementById('graphViewBtn');
-  const showing   = !graphView.classList.contains('hidden');
-  if (showing) {
-    graphView.classList.add('hidden');
-    main.classList.remove('hidden');
-    btn.classList.remove('active');
-  } else {
-    main.classList.add('hidden');
-    graphView.classList.remove('hidden');
-    btn.classList.add('active');
+  const showing = !document.getElementById('graphView').classList.contains('hidden');
+  hideAllViews();
+  if (!showing) {
+    document.querySelector('main').classList.add('hidden');
+    document.getElementById('graphView').classList.remove('hidden');
+    document.getElementById('graphViewBtn').classList.add('active');
     loadGraphView(graphViewCurrentPeriod);
   }
+}
+
+// ─── 종목별 그래프 뷰 ─────────────────────────────────────────
+function initStockChartsView() {
+  document.getElementById('stockChartsViewBtn').addEventListener('click', toggleStockChartsView);
+  document.getElementById('stockChartsBackBtn').addEventListener('click', hideAllViews);
+  document.querySelectorAll('.scv-pbtn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.scv-pbtn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      stockChartsCurrentPeriod = btn.dataset.p;
+      loadStockChartsView(stockChartsCurrentPeriod);
+    });
+  });
+}
+
+function toggleStockChartsView() {
+  const showing = !document.getElementById('stockChartsView').classList.contains('hidden');
+  hideAllViews();
+  if (!showing) {
+    document.querySelector('main').classList.add('hidden');
+    document.getElementById('stockChartsView').classList.remove('hidden');
+    document.getElementById('stockChartsViewBtn').classList.add('active');
+    loadStockChartsView(stockChartsCurrentPeriod);
+  }
+}
+
+async function loadStockChartsView(period) {
+  const grid = document.getElementById('stockChartsGrid');
+  Object.values(stockChartsInstances).forEach(c => c?.destroy());
+  stockChartsInstances = {};
+
+  if (!stocks.length) {
+    grid.innerHTML = '<p class="gv-empty">추가된 종목이 없습니다.<br>대시보드에서 종목을 먼저 추가해주세요.</p>';
+    return;
+  }
+
+  grid.innerHTML = stocks.map(s => {
+    const id = s.symbol.replace(/[^a-zA-Z0-9]/g, '_');
+    return `
+      <div class="scv-card">
+        <div class="scv-card-head">
+          <div class="scv-card-info">
+            <span class="scv-card-name">${s.name || s.symbol}</span>
+            <span class="scv-card-sym">${s.symbol}</span>
+          </div>
+          <div class="scv-card-vals">
+            <span class="scv-price" id="scvp-${id}">—</span>
+            <span class="scv-ret" id="scvr-${id}">—</span>
+          </div>
+        </div>
+        <div class="scv-chart-wrap">
+          <canvas id="scv-canvas-${id}"></canvas>
+        </div>
+      </div>`;
+  }).join('');
+
+  await Promise.allSettled(stocks.map(async s => {
+    const id = s.symbol.replace(/[^a-zA-Z0-9]/g, '_');
+    try {
+      const res = await fetch(`/api/chart/${encodeURIComponent(s.symbol)}?period=${period}`);
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      if (!data.close?.length) throw new Error();
+
+      const first = data.close[0];
+      const last  = data.close[data.close.length - 1];
+      const ret   = (last - first) / first * 100;
+      const sign  = ret >= 0 ? '+' : '';
+      const cur   = s.currency || 'USD';
+
+      const priceEl = document.getElementById(`scvp-${id}`);
+      const retEl   = document.getElementById(`scvr-${id}`);
+      if (priceEl) priceEl.textContent = formatPrice(last, cur);
+      if (retEl) {
+        retEl.textContent = `${sign}${ret.toFixed(2)}%`;
+        retEl.className = `scv-ret ${ret > 0 ? 'up' : ret < 0 ? 'down' : 'flat'}`;
+      }
+
+      const ctx = document.getElementById(`scv-canvas-${id}`);
+      if (!ctx) return;
+
+      const isUp = last >= first;
+      stockChartsInstances[s.symbol] = new Chart(ctx, {
+        type: 'line',
+        data: {
+          datasets: [{
+            data: data.dates.map((d, i) => ({ x: new Date(d).getTime(), y: data.close[i] })),
+            borderColor: isUp ? '#00d17a' : '#ff4655',
+            backgroundColor: isUp ? 'rgba(0,209,122,0.06)' : 'rgba(255,70,85,0.06)',
+            fill: true,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.3,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          scales: {
+            x: {
+              type: 'timeseries',
+              grid: { display: false },
+              ticks: {
+                color: '#7b7f97', font: { size: 9 }, maxTicksLimit: 5,
+                display: true,
+              },
+              time: {
+                displayFormats: { minute: 'HH:mm', hour: 'HH:mm', day: 'MM/dd', month: 'yyyy.MM' },
+              },
+            },
+            y: {
+              position: 'right',
+              grid: { color: '#252836' },
+              ticks: {
+                color: '#7b7f97', font: { size: 9 }, maxTicksLimit: 4,
+                callback: v => formatPrice(v, cur),
+              },
+            },
+          },
+        },
+      });
+    } catch {
+      const wrap = document.getElementById(`scv-canvas-${id}`)?.parentElement;
+      if (wrap) wrap.innerHTML = '<p style="color:var(--muted);text-align:center;padding:30px;font-size:0.8rem">데이터 없음</p>';
+    }
+  }));
 }
 
 async function loadGraphView(period) {
@@ -454,6 +589,7 @@ let usdKrwRate = null;
 // ─── Init ───────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initGraphView();
+  initStockChartsView();
   initSectorChartToggle();
   loadSectorChart();
   initIndexBar();

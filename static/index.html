@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=3" />
+  <link rel="stylesheet" href="style.css?v=4" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -18,6 +18,7 @@
         <div class="header-left">
           <span class="logo">주식 대시보드</span>
           <button id="graphViewBtn" class="graph-btn">그래프</button>
+          <button id="stockChartsViewBtn" class="graph-btn">종목별 그래프</button>
         </div>
         <div class="search-wrap">
           <input id="searchInput" type="text" placeholder="종목 검색 (예: AAPL, 삼성전자, 005930.KS)..." autocomplete="off" />
@@ -74,6 +75,22 @@
     <p id="empty" class="empty-hint">위 검색창에서 종목을 검색하고 추가해보세요.<br /><small>예: AAPL, TSLA, 005930.KS (삼성전자), 035720.KS (카카오)</small></p>
   </main>
 
+  <div id="stockChartsView" class="stock-charts-view hidden">
+    <div class="gv-toolbar">
+      <button id="stockChartsBackBtn" class="gv-back">← 대시보드</button>
+      <div class="gv-periods">
+        <button class="scv-pbtn active" data-p="1d">1일</button>
+        <button class="scv-pbtn" data-p="5d">7일</button>
+        <button class="scv-pbtn" data-p="1mo">1개월</button>
+        <button class="scv-pbtn" data-p="3mo">3개월</button>
+        <button class="scv-pbtn" data-p="6mo">6개월</button>
+        <button class="scv-pbtn" data-p="1y">1년</button>
+        <button class="scv-pbtn" data-p="5y">5년</button>
+      </div>
+    </div>
+    <div id="stockChartsGrid" class="scv-grid"></div>
+  </div>
+
   <div id="graphView" class="graph-view hidden">
     <div class="gv-toolbar">
       <button id="graphBackBtn" class="gv-back">← 대시보드</button>
@@ -117,6 +134,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>
