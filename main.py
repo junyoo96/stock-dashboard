@@ -461,6 +461,7 @@ async def get_yield_history(period: str = "1y"):
     spread = [{'t': d, 'v': round(two_y[d] - ten_y[d], 4)} for d in common[-limit:]]
 
     data = {
+        '2Y': raw.get('2Y', []),
         '3Y': raw.get('3Y', []),
         '5Y': raw.get('5Y', []),
         '10Y': raw.get('10Y', []),

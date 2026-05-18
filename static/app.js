@@ -1501,6 +1501,7 @@ function toggleMacroAnalysisView() {
 }
 
 const YC_SERIES = [
+  { key: '2Y',     label: '2년',              color: '#69db7c' },
   { key: '3Y',     label: '3년',              color: '#4f7eff' },
   { key: '5Y',     label: '5년',              color: '#ffd93d' },
   { key: '10Y',    label: '10년',             color: '#ff6b6b' },
