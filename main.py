@@ -538,4 +538,28 @@ async def get_sector_heatmap():
     return data
 
 
+def _fetch_vix_history(period: str) -> list:
+    period_map = {'1m': '1mo', '3m': '3mo', '6m': '6mo', '1y': '1y', '3y': '3y', '5y': '5y'}
+    try:
+        hist = yf.Ticker('^VIX').history(period=period_map.get(period, '1y'))
+        if hist.empty:
+            return []
+        return [{'t': d.strftime('%Y-%m-%d'), 'v': round(float(r['Close']), 2)}
+                for d, r in hist.iterrows()]
+    except Exception:
+        return []
+
+
+@app.get("/api/vix-history")
+async def get_vix_history(period: str = "1y"):
+    cache_key = f"vix-history:{period}"
+    cached = cache_get(cache_key, 3600)
+    if cached is not None:
+        return cached
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(executor, _fetch_vix_history, period)
+    cache_set(cache_key, result)
+    return result
+
+
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

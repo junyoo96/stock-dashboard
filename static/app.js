@@ -1556,6 +1556,7 @@ function toggleMacroAnalysisView() {
     document.getElementById('macroAnalysisBtn').classList.add('active');
     loadYieldCurve();
     loadSectorHeatmap();
+    loadVixChart();
   }
 }
 
@@ -1849,6 +1850,175 @@ function renderYieldCurveChart() {
       yieldCurveYieldChart.options.layout.padding.left = -diff;
       yieldCurveYieldChart.update('none');
     }
+  });
+}
+
+// ─── VIX 공포 지수 ───────────────────────────────────────────
+const VIX_ZONES = [
+  { from: 0,  to: 15,       label: '안정',        color: 'rgba(0,209,122,0.10)'   },
+  { from: 15, to: 25,       label: '보통',        color: 'rgba(255,217,61,0.10)'  },
+  { from: 25, to: 35,       label: '공포',        color: 'rgba(255,146,43,0.12)'  },
+  { from: 35, to: Infinity, label: '극단적 공포',  color: 'rgba(255,70,85,0.15)'   },
+];
+
+const VIX_BADGE = {
+  '안정':        'vix-stable',
+  '보통':        'vix-normal',
+  '공포':        'vix-fear',
+  '극단적 공포': 'vix-extreme',
+};
+
+function getVixLevel(v) {
+  return VIX_ZONES.find(z => v < z.to) || VIX_ZONES[VIX_ZONES.length - 1];
+}
+
+let vixChart = null;
+let vixPeriod = '1y';
+let _vixData  = [];
+
+async function loadVixChart() {
+  const container = document.getElementById('vixChartRow');
+
+  if (!container.querySelector('.yc-toolbar')) {
+    container.innerHTML = `
+      <div class="yc-toolbar">
+        <div class="yc-periods">
+          ${Object.entries(YC_PERIOD_LABELS).map(([p, label]) =>
+            `<button class="yc-pbtn${p === vixPeriod ? ' active' : ''}" data-p="${p}">${label}</button>`
+          ).join('')}
+        </div>
+      </div>
+      <div class="yc-chart-wrap vix-chart-wrap">
+        <span class="yc-loading" id="vixLoadingMsg">로딩 중...</span>
+        <canvas id="vixCanvas" style="display:none"></canvas>
+      </div>`;
+
+    container.querySelectorAll('.yc-pbtn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        container.querySelectorAll('.yc-pbtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        vixPeriod = btn.dataset.p;
+        fetchVixHistory();
+      });
+    });
+  }
+
+  await fetchVixHistory();
+}
+
+async function fetchVixHistory() {
+  const loadMsg  = document.getElementById('vixLoadingMsg');
+  const canvas   = document.getElementById('vixCanvas');
+  const badge    = document.getElementById('vixStatusBadge');
+  if (loadMsg) loadMsg.style.display = 'inline';
+  if (canvas)  canvas.style.display  = 'none';
+
+  try {
+    const res = await fetch(`/api/vix-history?period=${vixPeriod}`);
+    if (!res.ok) throw new Error('fetch failed');
+    _vixData = await res.json();
+
+    if (_vixData.length > 0) {
+      const last  = _vixData[_vixData.length - 1].v;
+      const level = getVixLevel(last);
+      badge.textContent = `${last.toFixed(2)}  ${level.label}`;
+      badge.className   = `vix-badge ${VIX_BADGE[level.label]}`;
+    }
+
+    renderVixChart();
+    if (loadMsg) loadMsg.style.display = 'none';
+    if (canvas)  canvas.style.display  = 'block';
+  } catch {
+    if (loadMsg) { loadMsg.style.display = 'inline'; loadMsg.textContent = '데이터 로드 실패'; }
+  }
+}
+
+function renderVixChart() {
+  const canvas = document.getElementById('vixCanvas');
+  if (!canvas) return;
+  if (vixChart) { vixChart.destroy(); vixChart = null; }
+
+  const ctx = canvas.getContext('2d');
+
+  const vixZoneBgPlugin = {
+    id: 'vixZoneBg',
+    beforeDraw(chart) {
+      const { ctx: c, chartArea, scales } = chart;
+      if (!chartArea) return;
+      const { top, left, right } = chartArea;
+      const yScale = scales.y;
+      c.save();
+      c.beginPath();
+      c.rect(left, top, right - left, chartArea.bottom - top);
+      c.clip();
+      VIX_ZONES.forEach(zone => {
+        const yTop    = yScale.getPixelForValue(Math.min(zone.to, yScale.max));
+        const yBottom = yScale.getPixelForValue(Math.max(zone.from, yScale.min));
+        if (yBottom <= yTop) return;
+        c.fillStyle = zone.color;
+        c.fillRect(left, yTop, right - left, yBottom - yTop);
+      });
+      // Zone boundary lines
+      [15, 25, 35].forEach(val => {
+        if (val < yScale.min || val > yScale.max) return;
+        const py = yScale.getPixelForValue(val);
+        c.strokeStyle = 'rgba(200,200,220,0.25)';
+        c.lineWidth = 1;
+        c.setLineDash([4, 4]);
+        c.beginPath();
+        c.moveTo(left, py);
+        c.lineTo(right, py);
+        c.stroke();
+      });
+      c.restore();
+    },
+  };
+
+  vixChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: 'VIX',
+        data: _vixData.map(d => ({ x: d.t, y: d.v })),
+        borderColor: '#ff922b',
+        backgroundColor: 'transparent',
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        borderWidth: 2,
+        tension: 0.3,
+      }],
+    },
+    plugins: [vixZoneBgPlugin],
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              const level = getVixLevel(c.parsed.y);
+              return `VIX: ${c.parsed.y?.toFixed(2)}  (${level.label})`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { tooltipFormat: 'yyyy-MM-dd', displayFormats: { month: 'yy-MM', year: 'yyyy' } },
+          grid: { color: '#252836' },
+          ticks: { color: '#7b7f97', font: { size: 11 }, maxTicksLimit: 8 },
+        },
+        y: {
+          position: 'left',
+          grid: { color: '#252836' },
+          ticks: { color: '#7b7f97', font: { size: 11 } },
+          title: { display: true, text: 'VIX', color: '#7b7f97', font: { size: 11 } },
+        },
+      },
+    },
   });
 }
 

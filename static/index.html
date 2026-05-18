@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=24" />
+  <link rel="stylesheet" href="style.css?v=25" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -101,6 +101,14 @@
         <div class="yc-loading">로딩 중...</div>
       </div>
     </div>
+
+    <div class="mav-section">
+      <div class="mav-sec-header">
+        <span class="mav-sec-title">공포 지수 (VIX)</span>
+        <span id="vixStatusBadge" class="vix-badge"></span>
+      </div>
+      <div id="vixChartRow"></div>
+    </div>
   </div>
 
   <div id="stockChartsView" class="stock-charts-view hidden">
@@ -172,6 +180,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=24"></script>
+  <script src="app.js?v=25"></script>
 </body>
 </html>
