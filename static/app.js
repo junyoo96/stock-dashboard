@@ -1511,7 +1511,7 @@ const YC_PERIOD_LABELS = { '1m': '1개월', '3m': '3개월', '6m': '6개월', '1
 let yieldCurveYieldChart  = null;
 let yieldCurveSpreadChart = null;
 let yieldCurvePeriod      = '1y';
-let yieldCurveHidden      = new Set();
+let yieldCurveHidden      = new Set(['3Y', '5Y']);
 let _yieldData            = {};
 let _ycSyncTime           = null;
 
