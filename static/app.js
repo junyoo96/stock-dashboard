@@ -1762,7 +1762,7 @@ function renderYieldCurveChart() {
       scales: {
         x: xCfg,
         y: {
-          position: 'right',
+          position: 'left',
           grid: { color: '#252836' },
           ticks: { color: '#cc5de8', font: { size: 11 }, callback: v => v.toFixed(2) + '%' },
           title: { display: true, text: '스프레드 (%)', color: '#cc5de8', font: { size: 11 } },
