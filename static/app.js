@@ -1545,6 +1545,52 @@ function heatColor(ret) {
 function initMacroAnalysisView() {
   document.getElementById('macroAnalysisBtn').addEventListener('click', toggleMacroAnalysisView);
   document.getElementById('macroAnalysisBackBtn').addEventListener('click', hideAllViews);
+
+  // 저장된 섹션 순서 복원
+  const view = document.getElementById('macroAnalysisView');
+  try {
+    const saved = JSON.parse(localStorage.getItem('mavSectionOrder') || '[]');
+    saved.forEach(key => {
+      const sec = view.querySelector(`.mav-section[data-section="${key}"]`);
+      if (sec) view.appendChild(sec);
+    });
+  } catch {}
+
+  // 섹션 드래그 앤 드롭
+  let dragSrc = null;
+
+  view.addEventListener('dragstart', e => {
+    if (!e.target.closest('.mav-sec-header')) { e.preventDefault(); return; }
+    dragSrc = e.target.closest('.mav-section[data-section]');
+    if (!dragSrc) return;
+    dragSrc.classList.add('mav-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+
+  view.addEventListener('dragover', e => {
+    e.preventDefault();
+    const target = e.target.closest('.mav-section[data-section]');
+    view.querySelectorAll('.mav-section').forEach(s => s.classList.remove('mav-drag-over'));
+    if (target && target !== dragSrc) target.classList.add('mav-drag-over');
+  });
+
+  view.addEventListener('drop', e => {
+    e.preventDefault();
+    const target = e.target.closest('.mav-section[data-section]');
+    if (!target || target === dragSrc) return;
+    const rect = target.getBoundingClientRect();
+    if (e.clientY < rect.top + rect.height / 2) target.before(dragSrc);
+    else target.after(dragSrc);
+    const order = [...view.querySelectorAll('.mav-section[data-section]')].map(s => s.dataset.section);
+    localStorage.setItem('mavSectionOrder', JSON.stringify(order));
+    view.querySelectorAll('.mav-section').forEach(s => s.classList.remove('mav-drag-over'));
+  });
+
+  view.addEventListener('dragend', () => {
+    if (dragSrc) dragSrc.classList.remove('mav-dragging');
+    view.querySelectorAll('.mav-section').forEach(s => s.classList.remove('mav-drag-over'));
+    dragSrc = null;
+  });
 }
 
 function toggleMacroAnalysisView() {
@@ -1919,7 +1965,7 @@ async function fetchVixHistory() {
     _vixData = await res.json();
 
     if (_vixData.length > 0) {
-      const last  = _vixData[_vixData.length - 1].v;
+      const last  = _vixData[_vixData.length - 1].c;
       const level = getVixLevel(last);
       badge.textContent = `${last.toFixed(2)}  ${level.label}`;
       badge.className   = `vix-badge ${VIX_BADGE[level.label]}`;
@@ -1945,22 +1991,22 @@ function renderVixChart() {
     beforeDraw(chart) {
       const { ctx: c, chartArea, scales } = chart;
       if (!chartArea) return;
-      const { top, left, right } = chartArea;
+      const { top, left, right, bottom } = chartArea;
       const yScale = scales.y;
       c.save();
       c.beginPath();
-      c.rect(left, top, right - left, chartArea.bottom - top);
+      c.rect(left, top, right - left, bottom - top);
       c.clip();
       VIX_ZONES.forEach(zone => {
-        const yTop    = yScale.getPixelForValue(Math.min(zone.to, yScale.max));
-        const yBottom = yScale.getPixelForValue(Math.max(zone.from, yScale.min));
+        const capTo   = zone.to === Infinity ? yScale.max : zone.to;
+        const yTop    = yScale.getPixelForValue(Math.min(capTo,      yScale.max));
+        const yBottom = yScale.getPixelForValue(Math.max(zone.from,  yScale.min));
         if (yBottom <= yTop) return;
         c.fillStyle = zone.color;
         c.fillRect(left, yTop, right - left, yBottom - yTop);
       });
-      // Zone boundary lines
       [15, 25, 35].forEach(val => {
-        if (val < yScale.min || val > yScale.max) return;
+        if (val <= yScale.min || val >= yScale.max) return;
         const py = yScale.getPixelForValue(val);
         c.strokeStyle = 'rgba(200,200,220,0.25)';
         c.lineWidth = 1;
@@ -1975,38 +2021,45 @@ function renderVixChart() {
   };
 
   vixChart = new Chart(ctx, {
-    type: 'line',
+    type: 'candlestick',
     data: {
       datasets: [{
         label: 'VIX',
-        data: _vixData.map(d => ({ x: d.t, y: d.v })),
-        borderColor: '#ff922b',
-        backgroundColor: 'transparent',
-        pointRadius: 0,
-        pointHoverRadius: 4,
-        borderWidth: 2,
-        tension: 0.3,
+        data: _vixData.map(d => ({
+          x: new Date(d.t).getTime(),
+          o: d.o, h: d.h, l: d.l, c: d.c,
+        })),
+        color: {
+          up:        '#ef5350',
+          down:      '#1e88e5',
+          unchanged: '#888888',
+        },
       }],
     },
     plugins: [vixZoneBgPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: c => {
-              const level = getVixLevel(c.parsed.y);
-              return `VIX: ${c.parsed.y?.toFixed(2)}  (${level.label})`;
+            label: ctx => {
+              const r = ctx.raw;
+              const level = getVixLevel(r.c);
+              return [
+                `시가: ${r.o?.toFixed(2)}`,
+                `고가: ${r.h?.toFixed(2)}`,
+                `저가: ${r.l?.toFixed(2)}`,
+                `종가: ${r.c?.toFixed(2)}  (${level.label})`,
+              ];
             },
           },
         },
       },
       scales: {
         x: {
-          type: 'time',
+          type: 'timeseries',
           time: { tooltipFormat: 'yyyy-MM-dd', displayFormats: { month: 'yy-MM', year: 'yyyy' } },
           grid: { color: '#252836' },
           ticks: { color: '#7b7f97', font: { size: 11 }, maxTicksLimit: 8 },

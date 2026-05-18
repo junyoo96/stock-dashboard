@@ -1341,6 +1341,22 @@ main {
   align-items: center;
   gap: 10px;
   margin-bottom: 16px;
+  cursor: grab;
+  user-select: none;
+}
+.mav-sec-header:active { cursor: grabbing; }
+
+.mav-drag-handle {
+  color: var(--muted);
+  font-size: 1rem;
+  opacity: 0.45;
+  flex-shrink: 0;
+}
+
+.mav-section.mav-dragging  { opacity: 0.35; }
+.mav-section.mav-drag-over {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
 }
 
 .mav-sec-title {

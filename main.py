@@ -544,7 +544,11 @@ def _fetch_vix_history(period: str) -> list:
         hist = yf.Ticker('^VIX').history(period=period_map.get(period, '1y'))
         if hist.empty:
             return []
-        return [{'t': d.strftime('%Y-%m-%d'), 'v': round(float(r['Close']), 2)}
+        return [{'t': d.strftime('%Y-%m-%d'),
+                 'o': round(float(r['Open']),  2),
+                 'h': round(float(r['High']),  2),
+                 'l': round(float(r['Low']),   2),
+                 'c': round(float(r['Close']), 2)}
                 for d, r in hist.iterrows()]
     except Exception:
         return []
