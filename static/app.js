@@ -1500,19 +1500,100 @@ function toggleMacroAnalysisView() {
   }
 }
 
-const YC_SERIES = [
-  { key: '2Y',     label: '2년',              color: '#69db7c' },
-  { key: '3Y',     label: '3년',              color: '#4f7eff' },
-  { key: '5Y',     label: '5년',              color: '#ffd93d' },
-  { key: '10Y',    label: '10년',             color: '#ff6b6b' },
-  { key: 'spread', label: '스프레드 (2Y-10Y)', color: '#cc5de8' },
+const YC_YIELD_SERIES = [
+  { key: '2Y',  label: '2년',  color: '#69db7c' },
+  { key: '3Y',  label: '3년',  color: '#4f7eff' },
+  { key: '5Y',  label: '5년',  color: '#ffd93d' },
+  { key: '10Y', label: '10년', color: '#ff6b6b' },
 ];
 const YC_PERIOD_LABELS = { '1m': '1개월', '3m': '3개월', '6m': '6개월', '1y': '1년', '3y': '3년', '5y': '5년' };
 
-let yieldCurveChart = null;
-let yieldCurvePeriod = '1y';
-let yieldCurveHidden = new Set();
-let _yieldData = {};
+let yieldCurveYieldChart  = null;
+let yieldCurveSpreadChart = null;
+let yieldCurvePeriod      = '1y';
+let yieldCurveHidden      = new Set();
+let _yieldData            = {};
+let _ycSyncTime           = null;
+
+const ycSyncPlugin = {
+  id: 'ycSync',
+  afterDraw(chart) {
+    if (_ycSyncTime === null) return;
+    const { ctx: c, chartArea, scales } = chart;
+    if (!chartArea) return;
+    const px = scales.x.getPixelForValue(_ycSyncTime);
+    if (px < chartArea.left || px > chartArea.right) return;
+    c.save();
+    c.strokeStyle = 'rgba(200,200,220,0.4)';
+    c.lineWidth = 1;
+    c.setLineDash([4, 3]);
+    c.beginPath();
+    c.moveTo(px, chartArea.top);
+    c.lineTo(px, chartArea.bottom);
+    c.stroke();
+    c.restore();
+  },
+  afterEvent(chart, args) {
+    const { event } = args;
+    if (event.type !== 'mousemove' && event.type !== 'mouseout') return;
+    const other = chart === yieldCurveYieldChart ? yieldCurveSpreadChart : yieldCurveYieldChart;
+    if (!other) return;
+
+    if (event.type === 'mouseout') {
+      _ycSyncTime = null;
+      other.tooltip.setActiveElements([], { x: 0, y: 0 });
+      other.update('none');
+      args.changed = true;
+      return;
+    }
+
+    const timeVal = chart.scales.x.getValueForPixel(event.x);
+    _ycSyncTime = timeVal;
+
+    const activeEls = [];
+    other.data.datasets.forEach((ds, di) => {
+      if (!other.isDatasetVisible(di) || !ds.data.length) return;
+      let minDist = Infinity, nearestIdx = 0;
+      ds.data.forEach((pt, idx) => {
+        const dist = Math.abs(new Date(pt.x).getTime() - timeVal);
+        if (dist < minDist) { minDist = dist; nearestIdx = idx; }
+      });
+      activeEls.push({ datasetIndex: di, index: nearestIdx });
+    });
+
+    const otherX = other.scales.x.getPixelForValue(timeVal);
+    other.tooltip.setActiveElements(activeEls, { x: otherX, y: 0 });
+    other.update('none');
+    args.changed = true;
+  },
+};
+
+const inversionBgPlugin = {
+  id: 'inversionBg',
+  beforeDraw(chart) {
+    const spread = _yieldData.spread || [];
+    if (!spread.length) return;
+    const { ctx: c, chartArea, scales } = chart;
+    if (!chartArea) return;
+    const { top, bottom, left, right } = chartArea;
+    c.save();
+    c.beginPath();
+    c.rect(left, top, right - left, bottom - top);
+    c.clip();
+    c.fillStyle = 'rgba(255, 70, 85, 0.18)';
+    let inRegion = false, rx = null;
+    for (const pt of spread) {
+      const px = scales.x.getPixelForValue(new Date(pt.t).getTime());
+      if (pt.v > 0 && !inRegion)  { inRegion = true;  rx = px; }
+      else if (pt.v <= 0 && inRegion) { inRegion = false; c.fillRect(rx, top, px - rx, bottom - top); }
+    }
+    if (inRegion) {
+      const px = scales.x.getPixelForValue(new Date(spread[spread.length - 1].t).getTime());
+      c.fillRect(rx, top, px - rx, bottom - top);
+    }
+    c.restore();
+  },
+};
 
 async function loadYieldCurve() {
   const container = document.getElementById('yieldCurveRow');
@@ -1526,7 +1607,7 @@ async function loadYieldCurve() {
           ).join('')}
         </div>
         <div class="yc-legend-wrap">
-          ${YC_SERIES.map(s =>
+          ${YC_YIELD_SERIES.map(s =>
             `<button class="yc-toggle-btn${yieldCurveHidden.has(s.key) ? ' hidden-series' : ''}" data-key="${s.key}">
                <span class="yc-dot" style="background:${s.color}"></span>${s.label}
              </button>`
@@ -1535,7 +1616,10 @@ async function loadYieldCurve() {
       </div>
       <div class="yc-chart-wrap">
         <span class="yc-loading" id="ycLoadingMsg">로딩 중...</span>
-        <canvas id="yieldCurveCanvas" style="display:none"></canvas>
+        <canvas id="ycYieldCanvas" style="display:none"></canvas>
+      </div>
+      <div class="yc-chart-wrap yc-spread-wrap">
+        <canvas id="ycSpreadCanvas" style="display:none"></canvas>
       </div>`;
 
     container.querySelectorAll('.yc-pbtn').forEach(btn => {
@@ -1550,17 +1634,17 @@ async function loadYieldCurve() {
     container.querySelectorAll('.yc-toggle-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const key = btn.dataset.key;
-        const idx = YC_SERIES.findIndex(s => s.key === key);
+        const idx = YC_YIELD_SERIES.findIndex(s => s.key === key);
         if (yieldCurveHidden.has(key)) {
           yieldCurveHidden.delete(key);
           btn.classList.remove('hidden-series');
-          yieldCurveChart?.setDatasetVisibility(idx, true);
+          yieldCurveYieldChart?.setDatasetVisibility(idx, true);
         } else {
           yieldCurveHidden.add(key);
           btn.classList.add('hidden-series');
-          yieldCurveChart?.setDatasetVisibility(idx, false);
+          yieldCurveYieldChart?.setDatasetVisibility(idx, false);
         }
-        yieldCurveChart?.update();
+        yieldCurveYieldChart?.update();
       });
     });
   }
@@ -1570,10 +1654,12 @@ async function loadYieldCurve() {
 
 async function fetchYieldHistory() {
   const loadMsg  = document.getElementById('ycLoadingMsg');
-  const canvas   = document.getElementById('yieldCurveCanvas');
   const statusEl = document.getElementById('yieldCurveStatus');
   if (loadMsg) loadMsg.style.display = 'inline';
-  if (canvas)  canvas.style.display  = 'none';
+  ['ycYieldCanvas', 'ycSpreadCanvas'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
 
   try {
     const res = await fetch(`/api/yield-history?period=${yieldCurvePeriod}`);
@@ -1589,93 +1675,95 @@ async function fetchYieldHistory() {
 
     renderYieldCurveChart();
     if (loadMsg) loadMsg.style.display = 'none';
-    if (canvas)  canvas.style.display  = 'block';
+    ['ycYieldCanvas', 'ycSpreadCanvas'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'block';
+    });
   } catch {
     if (loadMsg) { loadMsg.style.display = 'inline'; loadMsg.textContent = '데이터 로드 실패'; }
   }
 }
 
 function renderYieldCurveChart() {
-  const canvas = document.getElementById('yieldCurveCanvas');
-  if (!canvas) return;
-  if (yieldCurveChart) { yieldCurveChart.destroy(); yieldCurveChart = null; }
+  const yieldCanvas  = document.getElementById('ycYieldCanvas');
+  const spreadCanvas = document.getElementById('ycSpreadCanvas');
+  if (!yieldCanvas || !spreadCanvas) return;
 
-  const ctx = canvas.getContext('2d');
-  const datasets = YC_SERIES.map(s => ({
-    label: s.label,
-    data: (_yieldData[s.key] || []).map(d => ({ x: d.t, y: d.v })),
-    borderColor: s.color,
-    backgroundColor: 'transparent',
-    pointRadius: 0,
-    pointHoverRadius: 4,
-    borderWidth: s.key === 'spread' ? 1.5 : 2,
-    borderDash: s.key === 'spread' ? [5, 3] : [],
-    tension: 0.3,
-    hidden: yieldCurveHidden.has(s.key),
-    yAxisID: s.key === 'spread' ? 'ySpread' : 'yYield',
-  }));
+  if (yieldCurveYieldChart)  { yieldCurveYieldChart.destroy();  yieldCurveYieldChart  = null; }
+  if (yieldCurveSpreadChart) { yieldCurveSpreadChart.destroy(); yieldCurveSpreadChart = null; }
 
-  const inversionBgPlugin = {
-    id: 'inversionBg',
-    beforeDraw(chart) {
-      const spread = _yieldData.spread || [];
-      if (!spread.length) return;
-      const { ctx: c, chartArea, scales } = chart;
-      if (!chartArea) return;
-      const { top, bottom, left, right } = chartArea;
-      const xScale = scales.x;
-      c.save();
-      c.beginPath();
-      c.rect(left, top, right - left, bottom - top);
-      c.clip();
-      c.fillStyle = 'rgba(255, 70, 85, 0.18)';
-      let inRegion = false;
-      let rx = null;
-      for (const pt of spread) {
-        const px = xScale.getPixelForValue(new Date(pt.t).getTime());
-        if (pt.v > 0 && !inRegion) { inRegion = true; rx = px; }
-        else if (pt.v <= 0 && inRegion) { inRegion = false; c.fillRect(rx, top, px - rx, bottom - top); }
-      }
-      if (inRegion) {
-        const px = xScale.getPixelForValue(new Date(spread[spread.length - 1].t).getTime());
-        c.fillRect(rx, top, px - rx, bottom - top);
-      }
-      c.restore();
-    },
+  const xCfg = {
+    type: 'time',
+    time: { tooltipFormat: 'yyyy-MM-dd', displayFormats: { month: 'yy-MM', year: 'yyyy' } },
+    grid: { color: '#252836' },
+    ticks: { color: '#7b7f97', font: { size: 11 }, maxTicksLimit: 8 },
   };
 
-  yieldCurveChart = new Chart(ctx, {
+  yieldCurveYieldChart = new Chart(yieldCanvas.getContext('2d'), {
     type: 'line',
-    data: { datasets },
-    plugins: [inversionBgPlugin],
+    data: {
+      datasets: YC_YIELD_SERIES.map(s => ({
+        label: s.label,
+        data: (_yieldData[s.key] || []).map(d => ({ x: d.t, y: d.v })),
+        borderColor: s.color,
+        backgroundColor: 'transparent',
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        borderWidth: 2,
+        tension: 0.3,
+        hidden: yieldCurveHidden.has(s.key),
+      })),
+    },
+    plugins: [ycSyncPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(2)}%`,
-          },
-        },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(2)}%` } },
       },
       scales: {
-        x: {
-          type: 'time',
-          time: { tooltipFormat: 'yyyy-MM-dd', displayFormats: { month: 'yy-MM', year: 'yyyy' } },
-          grid: { color: '#252836' },
-          ticks: { color: '#7b7f97', font: { size: 11 }, maxTicksLimit: 8 },
-        },
-        yYield: {
+        x: { ...xCfg, ticks: { ...xCfg.ticks, display: false } },
+        y: {
           position: 'left',
           grid: { color: '#252836' },
           ticks: { color: '#7b7f97', font: { size: 11 }, callback: v => v.toFixed(1) + '%' },
           title: { display: true, text: '금리 (%)', color: '#7b7f97', font: { size: 11 } },
         },
-        ySpread: {
+      },
+    },
+  });
+
+  yieldCurveSpreadChart = new Chart(spreadCanvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: '스프레드 (2Y-10Y)',
+        data: (_yieldData.spread || []).map(d => ({ x: d.t, y: d.v })),
+        borderColor: '#cc5de8',
+        backgroundColor: 'transparent',
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        borderWidth: 1.5,
+        borderDash: [5, 3],
+        tension: 0.3,
+      }],
+    },
+    plugins: [ycSyncPlugin, inversionBgPlugin],
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(2)}%` } },
+      },
+      scales: {
+        x: xCfg,
+        y: {
           position: 'right',
-          grid: { drawOnChartArea: false },
+          grid: { color: '#252836' },
           ticks: { color: '#cc5de8', font: { size: 11 }, callback: v => v.toFixed(2) + '%' },
           title: { display: true, text: '스프레드 (%)', color: '#cc5de8', font: { size: 11 } },
         },
