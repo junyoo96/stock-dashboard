@@ -60,7 +60,12 @@ header {
   white-space: nowrap;
   flex: 1;
   justify-content: space-between;
+  cursor: grab;
+  transition: opacity 0.15s, border-color 0.15s, box-shadow 0.15s;
+  user-select: none;
 }
+.index-chip.ic-dragging  { opacity: 0.35; }
+.index-chip.ic-drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
 
 .idx-name  { font-weight: 700; color: var(--accent); font-size: 0.78rem; }
 .idx-vals  { display: flex; flex-direction: column; gap: 1px; align-items: flex-end; }

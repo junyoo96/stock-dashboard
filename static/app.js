@@ -793,10 +793,24 @@ function formatIndex(val) {
   return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function initIndexBar() {
+function loadIndexOrder() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('indexBarOrder') || '[]');
+    if (saved.length) {
+      const ordered = saved.map(sym => INDICES.find(i => i.sym === sym)).filter(Boolean);
+      const rest    = INDICES.filter(i => !saved.includes(i.sym));
+      return [...ordered, ...rest];
+    }
+  } catch {}
+  return [...INDICES];
+}
+
+let _indexOrder = loadIndexOrder();
+
+function renderIndexChips() {
   const row = document.getElementById('indexRow');
-  row.innerHTML = INDICES.map(({ sym, label }) => `
-    <div class="index-chip" id="ic-${sym.replace('^', '')}">
+  row.innerHTML = _indexOrder.map(({ sym, label }) => `
+    <div class="index-chip" id="ic-${sym.replace('^', '')}" data-sym="${sym}" draggable="true">
       <span class="idx-name">${label}</span>
       <div class="idx-vals">
         <span class="idx-price">—</span>
@@ -806,8 +820,53 @@ function initIndexBar() {
   `).join('');
 }
 
+function initIndexBar() {
+  renderIndexChips();
+
+  const row = document.getElementById('indexRow');
+  let dragSrc = null;
+
+  row.addEventListener('dragstart', e => {
+    dragSrc = e.target.closest('.index-chip');
+    if (!dragSrc) return;
+    dragSrc.classList.add('ic-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+
+  row.addEventListener('dragover', e => {
+    e.preventDefault();
+    const target = e.target.closest('.index-chip');
+    if (!target || target === dragSrc) return;
+    row.querySelectorAll('.index-chip').forEach(c => c.classList.remove('ic-drag-over'));
+    target.classList.add('ic-drag-over');
+  });
+
+  row.addEventListener('dragleave', e => {
+    const target = e.target.closest('.index-chip');
+    if (target) target.classList.remove('ic-drag-over');
+  });
+
+  row.addEventListener('drop', e => {
+    e.preventDefault();
+    const target = e.target.closest('.index-chip');
+    if (!target || target === dragSrc) return;
+    const srcSym = dragSrc.dataset.sym;
+    const tgtSym = target.dataset.sym;
+    const si = _indexOrder.findIndex(i => i.sym === srcSym);
+    const ti = _indexOrder.findIndex(i => i.sym === tgtSym);
+    _indexOrder.splice(ti, 0, _indexOrder.splice(si, 1)[0]);
+    localStorage.setItem('indexBarOrder', JSON.stringify(_indexOrder.map(i => i.sym)));
+    renderIndexChips();
+    fetchIndexBar();
+  });
+
+  row.addEventListener('dragend', () => {
+    row.querySelectorAll('.index-chip').forEach(c => c.classList.remove('ic-dragging', 'ic-drag-over'));
+  });
+}
+
 async function fetchIndexBar() {
-  await Promise.allSettled(INDICES.map(async ({ sym }) => {
+  await Promise.allSettled(_indexOrder.map(async ({ sym }) => {
     try {
       const data = await fetchPrice(sym);
       const id = sym.replace('^', '');
