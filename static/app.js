@@ -1615,9 +1615,39 @@ function renderYieldCurveChart() {
     yAxisID: s.key === 'spread' ? 'ySpread' : 'yYield',
   }));
 
+  const inversionBgPlugin = {
+    id: 'inversionBg',
+    beforeDraw(chart) {
+      const spread = _yieldData.spread || [];
+      if (!spread.length) return;
+      const { ctx: c, chartArea, scales } = chart;
+      if (!chartArea) return;
+      const { top, bottom, left, right } = chartArea;
+      const xScale = scales.x;
+      c.save();
+      c.beginPath();
+      c.rect(left, top, right - left, bottom - top);
+      c.clip();
+      c.fillStyle = 'rgba(255, 70, 85, 0.18)';
+      let inRegion = false;
+      let rx = null;
+      for (const pt of spread) {
+        const px = xScale.getPixelForValue(new Date(pt.t).getTime());
+        if (pt.v > 0 && !inRegion) { inRegion = true; rx = px; }
+        else if (pt.v <= 0 && inRegion) { inRegion = false; c.fillRect(rx, top, px - rx, bottom - top); }
+      }
+      if (inRegion) {
+        const px = xScale.getPixelForValue(new Date(spread[spread.length - 1].t).getTime());
+        c.fillRect(rx, top, px - rx, bottom - top);
+      }
+      c.restore();
+    },
+  };
+
   yieldCurveChart = new Chart(ctx, {
     type: 'line',
     data: { datasets },
+    plugins: [inversionBgPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
