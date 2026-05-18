@@ -68,8 +68,10 @@ function hideAllViews() {
   document.querySelector('main').classList.remove('hidden');
   document.getElementById('graphView').classList.add('hidden');
   document.getElementById('stockChartsView').classList.add('hidden');
+  document.getElementById('macroAnalysisView').classList.add('hidden');
   document.getElementById('graphViewBtn').classList.remove('active');
   document.getElementById('stockChartsViewBtn').classList.remove('active');
+  document.getElementById('macroAnalysisBtn').classList.remove('active');
   Object.values(stockChartsInstances).forEach(c => c?.destroy());
   stockChartsInstances = {};
   hiddenGraphStocks.clear();
@@ -734,6 +736,7 @@ let usdKrwRate = null;
 document.addEventListener('DOMContentLoaded', () => {
   initGraphView();
   initStockChartsView();
+  initMacroAnalysisView();
   initSectorChartToggle();
   loadSectorChart();
   initIndexBar();
@@ -1456,4 +1459,162 @@ function closeModal() {
   document.getElementById('overlay').classList.add('hidden');
   if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
   currentChartSymbol = null;
+}
+
+// ─── 거시경제 분석 ────────────────────────────────────────────
+const HEATMAP_PERIODS = ['1W', '1M', '3M', '6M', '1Y'];
+const HEATMAP_PERIOD_LABELS = { '1W': '1주', '1M': '1개월', '3M': '3개월', '6M': '6개월', '1Y': '1년' };
+const SECTOR_LABELS = {
+  'XLK': '기술', 'XLV': '헬스케어', 'XLF': '금융', 'XLC': '통신',
+  'XLY': '경기소비재', 'XLP': '필수소비재', 'XLI': '산업재', 'XLB': '소재',
+  'XLE': '에너지', 'XLU': '유틸리티', 'XLRE': '부동산',
+};
+
+let heatmapSortKey = null;
+let heatmapSortAsc = false;
+let _heatmapData = null;
+
+function heatColor(ret) {
+  if (ret === null || ret === undefined) return 'rgba(255,255,255,0.04)';
+  const abs = Math.min(Math.abs(ret), 20);
+  const alpha = 0.15 + (abs / 20) * 0.7;
+  return ret > 0
+    ? `rgba(0, 209, 122, ${alpha})`
+    : `rgba(255, 70, 85, ${alpha})`;
+}
+
+function initMacroAnalysisView() {
+  document.getElementById('macroAnalysisBtn').addEventListener('click', toggleMacroAnalysisView);
+  document.getElementById('macroAnalysisBackBtn').addEventListener('click', hideAllViews);
+}
+
+function toggleMacroAnalysisView() {
+  const showing = !document.getElementById('macroAnalysisView').classList.contains('hidden');
+  hideAllViews();
+  if (!showing) {
+    document.querySelector('main').classList.add('hidden');
+    document.getElementById('macroAnalysisView').classList.remove('hidden');
+    document.getElementById('macroAnalysisBtn').classList.add('active');
+    loadYieldCurve();
+    loadSectorHeatmap();
+  }
+}
+
+async function loadYieldCurve() {
+  const row = document.getElementById('yieldCurveRow');
+  const statusEl = document.getElementById('yieldCurveStatus');
+  row.innerHTML = '<div class="yc-loading">로딩 중...</div>';
+  try {
+    const res = await fetch('/api/yield-curve');
+    if (!res.ok) throw new Error('fetch failed');
+    const data = await res.json();
+
+    const y3m  = data['^IRX'];
+    const y10y = data['^TNX'];
+    if (y3m != null && y10y != null) {
+      if (y10y < y3m) {
+        statusEl.textContent = '역전 (경기침체 경고)';
+        statusEl.className = 'yc-status-badge inverted';
+      } else {
+        statusEl.textContent = '정상';
+        statusEl.className = 'yc-status-badge normal';
+      }
+    } else {
+      statusEl.textContent = '';
+    }
+
+    const maturities = [
+      { label: '3개월', key: '^IRX' },
+      { label: '5년',   key: '^FVX' },
+      { label: '10년',  key: '^TNX' },
+      { label: '30년',  key: '^TYX' },
+    ];
+    const maxVal = Math.max(...maturities.map(m => data[m.key] || 0), 1);
+
+    row.innerHTML = maturities.map(m => {
+      const val = data[m.key];
+      const pct = val != null ? ((val / maxVal) * 100).toFixed(1) : 4;
+      return `
+        <div class="yc-item">
+          <div class="yc-bar-wrap">
+            <div class="yc-bar" style="height:${pct}%"></div>
+          </div>
+          <div class="yc-val">${val != null ? val.toFixed(2) + '%' : 'N/A'}</div>
+          <div class="yc-label">${m.label}</div>
+        </div>`;
+    }).join('');
+  } catch {
+    row.innerHTML = '<div class="yc-loading">데이터 로드 실패</div>';
+  }
+}
+
+async function loadSectorHeatmap() {
+  const wrap = document.getElementById('heatmapTable');
+  wrap.innerHTML = '<div class="yc-loading">로딩 중...</div>';
+  try {
+    const res = await fetch('/api/sector-heatmap');
+    if (!res.ok) throw new Error('fetch failed');
+    _heatmapData = await res.json();
+    renderHeatmap();
+  } catch {
+    wrap.innerHTML = '<div class="yc-loading">데이터 로드 실패</div>';
+  }
+}
+
+function renderHeatmap() {
+  const wrap = document.getElementById('heatmapTable');
+  if (!_heatmapData) return;
+
+  let sectors = Object.keys(_heatmapData);
+  if (heatmapSortKey) {
+    sectors.sort((a, b) => {
+      const va = _heatmapData[a]?.[heatmapSortKey] ?? -Infinity;
+      const vb = _heatmapData[b]?.[heatmapSortKey] ?? -Infinity;
+      return heatmapSortAsc ? va - vb : vb - va;
+    });
+  }
+
+  wrap.innerHTML = `
+    <table class="hm-table">
+      <thead>
+        <tr>
+          <th class="hm-th-sector">섹터</th>
+          ${HEATMAP_PERIODS.map(p => `
+            <th class="hm-th-period${heatmapSortKey === p ? ' sorted' : ''}" data-period="${p}">
+              ${HEATMAP_PERIOD_LABELS[p]}${heatmapSortKey === p ? (heatmapSortAsc ? ' ↑' : ' ↓') : ''}
+            </th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>
+        ${sectors.map(sym => {
+          const row = _heatmapData[sym] || {};
+          return `<tr>
+            <td class="hm-td-sector">
+              <span class="hm-sector-sym">${sym}</span>
+              <span class="hm-sector-name">${SECTOR_LABELS[sym] || ''}</span>
+            </td>
+            ${HEATMAP_PERIODS.map(p => {
+              const val = row[p];
+              const bg  = heatColor(val);
+              const cls = val > 0 ? 'up' : val < 0 ? 'down' : 'flat';
+              return `<td class="hm-td ${cls}" style="background:${bg}">${val != null ? (val >= 0 ? '+' : '') + val.toFixed(2) + '%' : 'N/A'}</td>`;
+            }).join('')}
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+
+  wrap.querySelectorAll('.hm-th-period').forEach(th => {
+    th.addEventListener('click', () => {
+      const p = th.dataset.period;
+      if (heatmapSortKey === p) {
+        if (heatmapSortAsc) { heatmapSortKey = null; }
+        else { heatmapSortAsc = true; }
+      } else {
+        heatmapSortKey = p;
+        heatmapSortAsc = false;
+      }
+      renderHeatmap();
+    });
+  });
 }

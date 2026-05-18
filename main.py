@@ -400,4 +400,88 @@ async def get_performance(symbol: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/sector-performance")
+async def get_sector_performance():
+    symbols = ['XLRE','XLU','XLC','XLK','XLF','XLV','XLI','XLP','XLY','XLB','XLE']
+    cached = cache_get("sector-perf-all", 300)
+    if cached is not None:
+        return cached
+    loop = asyncio.get_running_loop()
+    tasks = [loop.run_in_executor(executor, _fetch_performance, sym) for sym in symbols]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    data = {}
+    for sym, r in zip(symbols, results):
+        if not isinstance(r, Exception):
+            data[sym] = r
+    cache_set("sector-perf-all", data)
+    return data
+
+
+def _fetch_yield(symbol: str):
+    try:
+        t = yf.Ticker(symbol)
+        hist = t.history(period="5d")
+        if hist.empty:
+            return None
+        return float(hist['Close'].iloc[-1])
+    except Exception:
+        return None
+
+
+@app.get("/api/yield-curve")
+async def get_yield_curve():
+    symbols = ['^IRX', '^FVX', '^TNX', '^TYX']
+    cached = cache_get("yield-curve", 600)
+    if cached is not None:
+        return cached
+    loop = asyncio.get_running_loop()
+    tasks = [loop.run_in_executor(executor, _fetch_yield, sym) for sym in symbols]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    data = {}
+    for sym, r in zip(symbols, results):
+        data[sym] = r if not isinstance(r, Exception) else None
+    cache_set("yield-curve", data)
+    return data
+
+
+def _fetch_sector_period_return(sym: str, period: str):
+    period_map = {'1W': '5d', '1M': '1mo', '3M': '3mo', '6M': '6mo', '1Y': '1y'}
+    yf_period = period_map.get(period, '1mo')
+    try:
+        t = yf.Ticker(sym)
+        hist = t.history(period=yf_period)
+        if hist.empty or len(hist) < 2:
+            return None
+        start = float(hist['Close'].iloc[0])
+        end = float(hist['Close'].iloc[-1])
+        return round((end - start) / start * 100, 2)
+    except Exception:
+        return None
+
+
+@app.get("/api/sector-heatmap")
+async def get_sector_heatmap():
+    symbols = ['XLRE', 'XLU', 'XLC', 'XLK', 'XLF', 'XLV', 'XLI', 'XLP', 'XLY', 'XLB', 'XLE']
+    periods = ['1W', '1M', '3M', '6M', '1Y']
+    cached = cache_get("sector-heatmap", 600)
+    if cached is not None:
+        return cached
+    loop = asyncio.get_running_loop()
+    tasks = []
+    for sym in symbols:
+        for p in periods:
+            tasks.append(loop.run_in_executor(executor, _fetch_sector_period_return, sym, p))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    data = {}
+    idx = 0
+    for sym in symbols:
+        data[sym] = {}
+        for p in periods:
+            r = results[idx]
+            data[sym][p] = r if not isinstance(r, Exception) else None
+            idx += 1
+    cache_set("sector-heatmap", data)
+    return data
+
+
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

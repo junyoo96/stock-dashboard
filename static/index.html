@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=9" />
+  <link rel="stylesheet" href="style.css?v=12" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -19,6 +19,7 @@
           <span class="logo">주식 대시보드</span>
           <button id="graphViewBtn" class="graph-btn">그래프</button>
           <button id="stockChartsViewBtn" class="graph-btn">종목별 그래프</button>
+          <button id="macroAnalysisBtn" class="graph-btn">거시경제 분석</button>
         </div>
         <div class="search-wrap">
           <input id="searchInput" type="text" placeholder="종목 검색 (예: AAPL, 삼성전자, 005930.KS)..." autocomplete="off" />
@@ -74,6 +75,33 @@
     <div id="grid" class="grid"></div>
     <p id="empty" class="empty-hint">위 검색창에서 종목을 검색하고 추가해보세요.<br /><small>예: AAPL, TSLA, 005930.KS (삼성전자), 035720.KS (카카오)</small></p>
   </main>
+
+  <div id="macroAnalysisView" class="macro-analysis-view hidden">
+    <div class="gv-toolbar">
+      <button id="macroAnalysisBackBtn" class="gv-back">← 대시보드</button>
+      <span class="mav-title">거시경제 분석</span>
+    </div>
+
+    <div class="mav-section">
+      <div class="mav-sec-header">
+        <span class="mav-sec-title">수익률 곡선 (Yield Curve)</span>
+        <span id="yieldCurveStatus" class="yc-status-badge"></span>
+      </div>
+      <div id="yieldCurveRow" class="yc-row">
+        <div class="yc-loading">로딩 중...</div>
+      </div>
+    </div>
+
+    <div class="mav-section">
+      <div class="mav-sec-header">
+        <span class="mav-sec-title">섹터 로테이션 히트맵</span>
+        <span class="mav-sec-sub">기간 헤더 클릭 시 정렬</span>
+      </div>
+      <div id="heatmapTable" class="hm-wrap">
+        <div class="yc-loading">로딩 중...</div>
+      </div>
+    </div>
+  </div>
 
   <div id="stockChartsView" class="stock-charts-view hidden">
     <div class="gv-toolbar">
@@ -144,6 +172,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>
