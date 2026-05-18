@@ -1558,9 +1558,14 @@ function initMacroAnalysisView() {
 
   // 섹션 드래그 앤 드롭
   let dragSrc = null;
+  let mavDragAllowed = false;
+
+  view.addEventListener('mousedown', e => {
+    mavDragAllowed = !!e.target.closest('.mav-sec-header');
+  });
 
   view.addEventListener('dragstart', e => {
-    if (!e.target.closest('.mav-sec-header')) { e.preventDefault(); return; }
+    if (!mavDragAllowed) { e.preventDefault(); return; }
     dragSrc = e.target.closest('.mav-section[data-section]');
     if (!dragSrc) return;
     dragSrc.classList.add('mav-dragging');
