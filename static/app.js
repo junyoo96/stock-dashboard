@@ -1718,6 +1718,7 @@ function renderYieldCurveChart() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      layout: { padding: { left: 0 } },
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
@@ -1730,7 +1731,6 @@ function renderYieldCurveChart() {
           grid: { color: '#252836' },
           ticks: { color: '#7b7f97', font: { size: 11 }, callback: v => v.toFixed(1) + '%' },
           title: { display: true, text: '금리 (%)', color: '#7b7f97', font: { size: 11 } },
-          afterFit(scale) { scale.width = 62; },
         },
       },
     },
@@ -1755,6 +1755,7 @@ function renderYieldCurveChart() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      layout: { padding: { left: 0 } },
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
@@ -1770,10 +1771,25 @@ function renderYieldCurveChart() {
           },
           ticks: { color: '#cc5de8', font: { size: 11 }, callback: v => v.toFixed(2) + '%' },
           title: { display: true, text: '스프레드 (%)', color: '#cc5de8', font: { size: 11 } },
-          afterFit(scale) { scale.width = 62; },
         },
       },
     },
+  });
+
+  // 두 차트의 chartArea.left를 맞춰서 수직축 정렬
+  requestAnimationFrame(() => {
+    if (!yieldCurveYieldChart || !yieldCurveSpreadChart) return;
+    const leftY = yieldCurveYieldChart.chartArea?.left ?? 0;
+    const leftS = yieldCurveSpreadChart.chartArea?.left ?? 0;
+    const diff  = Math.round(leftY - leftS);
+    if (Math.abs(diff) < 1) return;
+    if (diff > 0) {
+      yieldCurveSpreadChart.options.layout.padding.left = diff;
+      yieldCurveSpreadChart.update('none');
+    } else {
+      yieldCurveYieldChart.options.layout.padding.left = -diff;
+      yieldCurveYieldChart.update('none');
+    }
   });
 }
 
