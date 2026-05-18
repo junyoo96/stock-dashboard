@@ -1500,52 +1500,157 @@ function toggleMacroAnalysisView() {
   }
 }
 
-async function loadYieldCurve() {
-  const row = document.getElementById('yieldCurveRow');
-  const statusEl = document.getElementById('yieldCurveStatus');
-  row.innerHTML = '<div class="yc-loading">로딩 중...</div>';
-  try {
-    const res = await fetch('/api/yield-curve');
-    if (!res.ok) throw new Error('fetch failed');
-    const data = await res.json();
+const YC_SERIES = [
+  { key: '3Y',     label: '3년',              color: '#4f7eff' },
+  { key: '5Y',     label: '5년',              color: '#ffd93d' },
+  { key: '10Y',    label: '10년',             color: '#ff6b6b' },
+  { key: 'spread', label: '스프레드 (2Y-10Y)', color: '#cc5de8' },
+];
+const YC_PERIOD_LABELS = { '1m': '1개월', '3m': '3개월', '6m': '6개월', '1y': '1년', '3y': '3년', '5y': '5년' };
 
-    const y3m  = data['^IRX'];
-    const y10y = data['^TNX'];
-    if (y3m != null && y10y != null) {
-      if (y10y < y3m) {
-        statusEl.textContent = '역전 (경기침체 경고)';
-        statusEl.className = 'yc-status-badge inverted';
-      } else {
-        statusEl.textContent = '정상';
-        statusEl.className = 'yc-status-badge normal';
-      }
-    } else {
-      statusEl.textContent = '';
+let yieldCurveChart = null;
+let yieldCurvePeriod = '1y';
+let yieldCurveHidden = new Set();
+let _yieldData = {};
+
+async function loadYieldCurve() {
+  const container = document.getElementById('yieldCurveRow');
+
+  if (!container.querySelector('.yc-toolbar')) {
+    container.innerHTML = `
+      <div class="yc-toolbar">
+        <div class="yc-periods">
+          ${Object.entries(YC_PERIOD_LABELS).map(([p, label]) =>
+            `<button class="yc-pbtn${p === yieldCurvePeriod ? ' active' : ''}" data-p="${p}">${label}</button>`
+          ).join('')}
+        </div>
+        <div class="yc-legend-wrap">
+          ${YC_SERIES.map(s =>
+            `<button class="yc-toggle-btn${yieldCurveHidden.has(s.key) ? ' hidden-series' : ''}" data-key="${s.key}">
+               <span class="yc-dot" style="background:${s.color}"></span>${s.label}
+             </button>`
+          ).join('')}
+        </div>
+      </div>
+      <div class="yc-chart-wrap">
+        <span class="yc-loading" id="ycLoadingMsg">로딩 중...</span>
+        <canvas id="yieldCurveCanvas" style="display:none"></canvas>
+      </div>`;
+
+    container.querySelectorAll('.yc-pbtn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        container.querySelectorAll('.yc-pbtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        yieldCurvePeriod = btn.dataset.p;
+        fetchYieldHistory();
+      });
+    });
+
+    container.querySelectorAll('.yc-toggle-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.key;
+        const idx = YC_SERIES.findIndex(s => s.key === key);
+        if (yieldCurveHidden.has(key)) {
+          yieldCurveHidden.delete(key);
+          btn.classList.remove('hidden-series');
+          yieldCurveChart?.setDatasetVisibility(idx, true);
+        } else {
+          yieldCurveHidden.add(key);
+          btn.classList.add('hidden-series');
+          yieldCurveChart?.setDatasetVisibility(idx, false);
+        }
+        yieldCurveChart?.update();
+      });
+    });
+  }
+
+  await fetchYieldHistory();
+}
+
+async function fetchYieldHistory() {
+  const loadMsg  = document.getElementById('ycLoadingMsg');
+  const canvas   = document.getElementById('yieldCurveCanvas');
+  const statusEl = document.getElementById('yieldCurveStatus');
+  if (loadMsg) loadMsg.style.display = 'inline';
+  if (canvas)  canvas.style.display  = 'none';
+
+  try {
+    const res = await fetch(`/api/yield-history?period=${yieldCurvePeriod}`);
+    if (!res.ok) throw new Error('fetch failed');
+    _yieldData = await res.json();
+
+    const spread = _yieldData.spread || [];
+    if (spread.length > 0) {
+      const last = spread[spread.length - 1].v;
+      statusEl.textContent = last > 0 ? '역전 (경기침체 경고)' : '정상';
+      statusEl.className   = `yc-status-badge ${last > 0 ? 'inverted' : 'normal'}`;
     }
 
-    const maturities = [
-      { label: '3개월', key: '^IRX' },
-      { label: '5년',   key: '^FVX' },
-      { label: '10년',  key: '^TNX' },
-      { label: '30년',  key: '^TYX' },
-    ];
-    const maxVal = Math.max(...maturities.map(m => data[m.key] || 0), 1);
-
-    row.innerHTML = maturities.map(m => {
-      const val = data[m.key];
-      const pct = val != null ? ((val / maxVal) * 100).toFixed(1) : 4;
-      return `
-        <div class="yc-item">
-          <div class="yc-bar-wrap">
-            <div class="yc-bar" style="height:${pct}%"></div>
-          </div>
-          <div class="yc-val">${val != null ? val.toFixed(2) + '%' : 'N/A'}</div>
-          <div class="yc-label">${m.label}</div>
-        </div>`;
-    }).join('');
+    renderYieldCurveChart();
+    if (loadMsg) loadMsg.style.display = 'none';
+    if (canvas)  canvas.style.display  = 'block';
   } catch {
-    row.innerHTML = '<div class="yc-loading">데이터 로드 실패</div>';
+    if (loadMsg) { loadMsg.style.display = 'inline'; loadMsg.textContent = '데이터 로드 실패'; }
   }
+}
+
+function renderYieldCurveChart() {
+  const canvas = document.getElementById('yieldCurveCanvas');
+  if (!canvas) return;
+  if (yieldCurveChart) { yieldCurveChart.destroy(); yieldCurveChart = null; }
+
+  const ctx = canvas.getContext('2d');
+  const datasets = YC_SERIES.map(s => ({
+    label: s.label,
+    data: (_yieldData[s.key] || []).map(d => ({ x: d.t, y: d.v })),
+    borderColor: s.color,
+    backgroundColor: 'transparent',
+    pointRadius: 0,
+    pointHoverRadius: 4,
+    borderWidth: s.key === 'spread' ? 1.5 : 2,
+    borderDash: s.key === 'spread' ? [5, 3] : [],
+    tension: 0.3,
+    hidden: yieldCurveHidden.has(s.key),
+    yAxisID: s.key === 'spread' ? 'ySpread' : 'yYield',
+  }));
+
+  yieldCurveChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(2)}%`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { tooltipFormat: 'yyyy-MM-dd', displayFormats: { month: 'yy-MM', year: 'yyyy' } },
+          grid: { color: '#252836' },
+          ticks: { color: '#7b7f97', font: { size: 11 }, maxTicksLimit: 8 },
+        },
+        yYield: {
+          position: 'left',
+          grid: { color: '#252836' },
+          ticks: { color: '#7b7f97', font: { size: 11 }, callback: v => v.toFixed(1) + '%' },
+          title: { display: true, text: '금리 (%)', color: '#7b7f97', font: { size: 11 } },
+        },
+        ySpread: {
+          position: 'right',
+          grid: { drawOnChartArea: false },
+          ticks: { color: '#cc5de8', font: { size: 11 }, callback: v => v.toFixed(2) + '%' },
+          title: { display: true, text: '스프레드 (%)', color: '#cc5de8', font: { size: 11 } },
+        },
+      },
+    },
+  });
 }
 
 async function loadSectorHeatmap() {

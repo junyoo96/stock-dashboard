@@ -4,6 +4,8 @@ import yfinance as yf
 import httpx
 import asyncio
 import time
+import csv
+from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
@@ -414,6 +416,57 @@ async def get_sector_performance():
         if not isinstance(r, Exception):
             data[sym] = r
     cache_set("sector-perf-all", data)
+    return data
+
+
+async def _fetch_fred_series(series_id: str, limit: int) -> list:
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        text = resp.text
+    reader = csv.reader(StringIO(text))
+    next(reader)
+    rows = []
+    for row in reader:
+        if len(row) < 2 or row[1] in ('.', ''):
+            continue
+        try:
+            rows.append({'t': row[0], 'v': float(row[1])})
+        except ValueError:
+            continue
+    return rows[-limit:]
+
+
+@app.get("/api/yield-history")
+async def get_yield_history(period: str = "1y"):
+    limit_map = {'1m': 22, '3m': 65, '6m': 130, '1y': 252, '3y': 756, '5y': 1260}
+    limit = limit_map.get(period, 252)
+    cache_key = f"yield-history:{period}"
+    cached = cache_get(cache_key, 3600)
+    if cached is not None:
+        return cached
+
+    series_map = {'2Y': 'DGS2', '3Y': 'DGS3', '5Y': 'DGS5', '10Y': 'DGS10'}
+    tasks = [_fetch_fred_series(sid, limit) for sid in series_map.values()]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    raw = {}
+    for key, result in zip(series_map.keys(), results):
+        raw[key] = result if not isinstance(result, Exception) else []
+
+    two_y = {r['t']: r['v'] for r in raw.get('2Y', [])}
+    ten_y = {r['t']: r['v'] for r in raw.get('10Y', [])}
+    common = sorted(set(two_y) & set(ten_y))
+    spread = [{'t': d, 'v': round(two_y[d] - ten_y[d], 4)} for d in common[-limit:]]
+
+    data = {
+        '3Y': raw.get('3Y', []),
+        '5Y': raw.get('5Y', []),
+        '10Y': raw.get('10Y', []),
+        'spread': spread,
+    }
+    cache_set(cache_key, data)
     return data
 
 
