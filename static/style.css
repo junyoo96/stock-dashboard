@@ -1359,6 +1359,12 @@ main {
   box-shadow: 0 0 0 2px var(--accent-dim);
 }
 
+/* 터치 드래그 공통 하이라이트 */
+.td-over {
+  outline: 2px dashed rgba(99,179,237,0.7);
+  outline-offset: 2px;
+}
+
 .mav-sec-title {
   font-size: 1rem;
   font-weight: 700;
@@ -1464,6 +1470,99 @@ main {
 .vix-badge.vix-normal  { background: rgba(255,217,61,0.15); color: #ffd93d; }
 .vix-badge.vix-fear    { background: rgba(255,146,43,0.15); color: #ff922b; }
 .vix-badge.vix-extreme { background: rgba(255,70,85,0.15);  color: var(--red); }
+
+/* ─── ISM PMI Badge ─── */
+.ism-badge {
+  padding: 2px 10px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.ism-badge.ism-recession { background: rgba(255,70,85,0.15);   color: var(--red); }
+.ism-badge.ism-contract  { background: rgba(255,146,43,0.15);  color: #ff922b; }
+.ism-badge.ism-expand    { background: rgba(0,209,122,0.15);   color: var(--green); }
+.ism-badge.ism-strong    { background: rgba(0,209,122,0.25);   color: var(--green); }
+
+/* ─── LEI Badge ─── */
+.lei-badge {
+  padding: 2px 10px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.lei-badge.lei-expand   { background: rgba(0,209,122,0.15);  color: var(--green); }
+.lei-badge.lei-contract { background: rgba(255,70,85,0.15);  color: var(--red); }
+
+/* ─── TGA Badge ─── */
+.tga-badge {
+  padding: 2px 10px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.tga-badge.tga-normal  { background: rgba(0,209,122,0.15);  color: var(--green); }
+.tga-badge.tga-caution { background: rgba(255,217,61,0.15); color: #ffd93d; }
+.tga-badge.tga-danger  { background: rgba(255,70,85,0.15);  color: var(--red); }
+
+/* ─── Yield Spread Zone Legend ─── */
+.yc-zone-legend {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 6px 14px 8px;
+  flex-wrap: wrap;
+}
+.yc-zl-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+.yc-zl-item em {
+  font-style: normal;
+  opacity: 0.75;
+}
+.yc-zl-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.yc-zl-severe .yc-zl-dot { background: rgba(255,70,85,0.9); }
+.yc-zl-invert .yc-zl-dot { background: rgba(255,146,43,0.9); }
+.yc-zl-flat   .yc-zl-dot { background: rgba(255,217,61,0.9); }
+.yc-zl-normal .yc-zl-dot { background: rgba(0,209,122,0.9); }
+
+/* ─── TGA Zone Legend ─── */
+.tga-zone-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+.tga-zl-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+.tga-zl-item em {
+  font-style: normal;
+  opacity: 0.75;
+}
+.tga-zl-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.tga-zl-danger  .tga-zl-dot { background: rgba(255,70,85,0.8); }
+.tga-zl-caution .tga-zl-dot { background: rgba(255,217,61,0.8); }
+.tga-zl-normal  .tga-zl-dot { background: rgba(0,209,122,0.8); }
 
 .vix-chart-wrap { height: 260px; }
 

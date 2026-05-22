@@ -1,15 +1,60 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 import yfinance as yf
 import httpx
 import asyncio
 import time
 import csv
+import sqlite3
+import json
+import os
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
 executor = ThreadPoolExecutor(max_workers=20)
+
+# ─── SQLite DB 초기화 ─────────────────────────────────────────
+DB_PATH = os.path.join(os.path.dirname(__file__), "dashboard.db")
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    with get_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS stocks (
+                symbol       TEXT PRIMARY KEY,
+                name         TEXT NOT NULL,
+                currency     TEXT NOT NULL DEFAULT 'USD',
+                display_order INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+init_db()
+
+
+# ─── Pydantic 모델 ────────────────────────────────────────────
+class StockItem(BaseModel):
+    symbol: str
+    name: str
+    currency: str = "USD"
+
+class StocksPayload(BaseModel):
+    stocks: list[StockItem]
+
+class SettingPayload(BaseModel):
+    value: str
 
 _cache: dict = {}
 
@@ -458,7 +503,7 @@ async def get_yield_history(period: str = "1y"):
     two_y = {r['t']: r['v'] for r in raw.get('2Y', [])}
     ten_y = {r['t']: r['v'] for r in raw.get('10Y', [])}
     common = sorted(set(two_y) & set(ten_y))
-    spread = [{'t': d, 'v': round(two_y[d] - ten_y[d], 4)} for d in common[-limit:]]
+    spread = [{'t': d, 'v': round(ten_y[d] - two_y[d], 4)} for d in common[-limit:]]
 
     data = {
         '2Y': raw.get('2Y', []),
@@ -564,6 +609,129 @@ async def get_vix_history(period: str = "1y"):
     result = await loop.run_in_executor(executor, _fetch_vix_history, period)
     cache_set(cache_key, result)
     return result
+
+
+async def _fetch_oecd_cli(limit: int) -> list:
+    # New OECD SDMX REST API (stats.oecd.org → sdmx.oecd.org)
+    # Dimensions: REF_AREA.FREQ.MEASURE.ADJUSTMENT.UNIT_MEASURE
+    # Key dimensions: REF_AREA.FREQ.MEASURE.UNIT_MEASURE.ACTIVITY.ADJUSTMENT.TRANSFORMATION.TIME_HORIZ.METHODOLOGY
+    url = (
+        "https://sdmx.oecd.org/public/rest/data/"
+        "OECD.SDD.STES,DSD_STES@DF_CLI/"
+        "USA.M.LI.IX._Z.AA.IX._Z.H"
+        "?format=csvfilewithlabels"
+    )
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        text = resp.text
+
+    reader = csv.reader(StringIO(text))
+    headers = [h.strip().lower() for h in next(reader)]
+    try:
+        time_idx = headers.index("time_period")
+        val_idx  = headers.index("obs_value")
+    except ValueError:
+        return []
+
+    rows = []
+    for row in reader:
+        if len(row) <= max(time_idx, val_idx):
+            continue
+        t = row[time_idx].strip()
+        v = row[val_idx].strip()
+        if not v or v in (".", "", "nan"):
+            continue
+        try:
+            date_str = t + "-01" if len(t) == 7 else t
+            rows.append({"t": date_str, "v": round(float(v), 3)})
+        except ValueError:
+            continue
+
+    rows.sort(key=lambda r: r["t"])
+    return rows[-limit:]
+
+
+@app.get("/api/lei-history")
+async def get_lei_history(period: str = "5y"):
+    limit_map = {'1y': 12, '2y': 24, '3y': 36, '5y': 60, '10y': 120}
+    limit = limit_map.get(period, 60)
+    cache_key = f"lei-history:{period}"
+    cached = cache_get(cache_key, 3600)
+    if cached is not None:
+        return cached
+    data = await _fetch_oecd_cli(limit)
+    cache_set(cache_key, data)
+    return data
+
+
+@app.get("/api/tga-history")
+async def get_tga_history(period: str = "2y"):
+    limit_map = {'1y': 52, '2y': 104, '3y': 156, '5y': 260}
+    limit = limit_map.get(period, 104)
+    cache_key = f"tga-history:{period}"
+    cached = cache_get(cache_key, 3600)
+    if cached is not None:
+        return cached
+    data = await _fetch_fred_series('WTREGEN', limit)
+    cache_set(cache_key, data)
+    return data
+
+
+@app.get("/api/ism-pmi-history")
+async def get_ism_pmi_history(period: str = "5y"):
+    limit_map = {'1y': 12, '2y': 24, '3y': 36, '5y': 60, '10y': 120}
+    limit = limit_map.get(period, 60)
+    cache_key = f"ism-pmi-history:{period}"
+    cached = cache_get(cache_key, 3600)
+    if cached is not None:
+        return cached
+    data = await _fetch_fred_series('GACDFSA066MSFRBPHI', limit)
+    cache_set(cache_key, data)
+    return data
+
+
+# ─── DB 엔드포인트 ───────────────────────────────────────────
+@app.get("/api/db/stocks")
+def db_get_stocks():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT symbol, name, currency FROM stocks ORDER BY display_order"
+        ).fetchall()
+    return [{"symbol": r["symbol"], "name": r["name"], "currency": r["currency"]} for r in rows]
+
+
+@app.post("/api/db/stocks")
+def db_save_stocks(payload: StocksPayload):
+    with get_db() as conn:
+        conn.execute("DELETE FROM stocks")
+        for i, s in enumerate(payload.stocks):
+            conn.execute(
+                "INSERT INTO stocks (symbol, name, currency, display_order) VALUES (?, ?, ?, ?)",
+                (s.symbol, s.name, s.currency, i),
+            )
+        conn.commit()
+    return {"ok": True}
+
+
+@app.get("/api/db/settings/{key}")
+def db_get_setting(key: str):
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"key": key, "value": row["value"]}
+
+
+@app.put("/api/db/settings/{key}")
+def db_save_setting(key: str, payload: SettingPayload):
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, payload.value),
+        )
+        conn.commit()
+    return {"ok": True}
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

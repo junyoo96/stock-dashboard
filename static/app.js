@@ -557,9 +557,88 @@ function formatMacroValue(symbol, price) {
   return price.toFixed(2);
 }
 
+// ─── 터치 드래그 헬퍼 ─────────────────────────────────────────
+function addTouchDrag(container, itemSel, handleSel, onDrop) {
+  let dragEl = null, clone = null, offX = 0, offY = 0;
+  let pendingEl = null, pendingX = 0, pendingY = 0, pendingOffX = 0, pendingOffY = 0;
+  const THRESHOLD = 10;
+
+  container.addEventListener('touchstart', e => {
+    const touch = e.touches[0];
+    const startEl = document.elementFromPoint(touch.clientX, touch.clientY);
+    if (!startEl) return;
+    if (handleSel && !startEl.closest(handleSel)) return;
+    const item = startEl.closest(itemSel);
+    if (!item || !container.contains(item)) return;
+    const rect = item.getBoundingClientRect();
+    pendingEl = item;
+    pendingX = touch.clientX; pendingY = touch.clientY;
+    pendingOffX = touch.clientX - rect.left;
+    pendingOffY = touch.clientY - rect.top;
+  }, { passive: true });
+
+  container.addEventListener('touchmove', e => {
+    const touch = e.touches[0];
+    if (pendingEl && !dragEl) {
+      if (Math.abs(touch.clientX - pendingX) < THRESHOLD &&
+          Math.abs(touch.clientY - pendingY) < THRESHOLD) return;
+      dragEl = pendingEl; pendingEl = null;
+      offX = pendingOffX; offY = pendingOffY;
+      const rect = dragEl.getBoundingClientRect();
+      clone = dragEl.cloneNode(true);
+      clone.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;` +
+        `width:${rect.width}px;height:${rect.height}px;opacity:0.85;pointer-events:none;` +
+        `z-index:9999;transform:scale(1.03);box-shadow:0 8px 24px rgba(0,0,0,0.45);`;
+      document.body.appendChild(clone);
+      dragEl.style.opacity = '0.3';
+    }
+    if (!dragEl || !clone) return;
+    clone.style.left = `${touch.clientX - offX}px`;
+    clone.style.top  = `${touch.clientY - offY}px`;
+    clone.style.visibility = 'hidden';
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    clone.style.visibility = '';
+    const target = el ? el.closest(itemSel) : null;
+    container.querySelectorAll(itemSel).forEach(c => c.classList.remove('td-over'));
+    if (target && target !== dragEl && container.contains(target)) target.classList.add('td-over');
+    e.preventDefault();
+  }, { passive: false });
+
+  const cleanup = e => {
+    pendingEl = null;
+    if (!dragEl) return;
+    const touch = (e.changedTouches || e.touches)[0];
+    if (clone) clone.style.visibility = 'hidden';
+    const el = touch ? document.elementFromPoint(touch.clientX, touch.clientY) : null;
+    if (clone) { clone.remove(); clone = null; }
+    dragEl.style.opacity = '';
+    container.querySelectorAll(itemSel).forEach(c => c.classList.remove('td-over'));
+    const target = el ? el.closest(itemSel) : null;
+    const dropped = dragEl;
+    dragEl = null;
+    if (touch && target && target !== dropped && container.contains(target)) {
+      onDrop(dropped, target, touch.clientY);
+    }
+  };
+  container.addEventListener('touchend',    cleanup, { passive: true });
+  container.addEventListener('touchcancel', cleanup, { passive: true });
+}
+
 function initMacroSection() {
   renderMacroChips();
   initMacroSearch();
+  const row = document.getElementById('macroRow');
+  if (row) addTouchDrag(row, '.macro-chip', null, (dragged, target) => {
+    const fromSym = dragged.dataset.sym;
+    const toSym   = target.dataset.sym;
+    if (!fromSym || !toSym || fromSym === toSym) return;
+    const fi = macroIndicators.findIndex(m => m.symbol === fromSym);
+    const ti = macroIndicators.findIndex(m => m.symbol === toSym);
+    if (fi === -1 || ti === -1) return;
+    macroIndicators.splice(ti, 0, macroIndicators.splice(fi, 1)[0]);
+    saveMacroIndicators();
+    renderMacroChips();
+  });
 }
 
 function renderMacroChips() {
@@ -574,6 +653,7 @@ function renderMacroChips() {
     const chip = document.createElement('div');
     chip.className = 'macro-chip';
     chip.id = `mc-${symbol.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    chip.dataset.sym = symbol;
     chip.innerHTML = `
       <div class="mc-info">
         <span class="mc-name">${name}</span>
@@ -733,7 +813,11 @@ let countdown = 60;
 let usdKrwRate = null;
 
 // ─── Init ───────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // DB에서 저장된 데이터 먼저 로드
+  await loadStocksFromDB();
+  await loadIndexOrderFromDB();
+
   initGraphView();
   initStockChartsView();
   initMacroAnalysisView();
@@ -743,6 +827,18 @@ document.addEventListener('DOMContentLoaded', () => {
   initSectorBar();
   initMacroSection();
   renderGrid();
+  addTouchDrag(document.getElementById('grid'), '.card', null, (dragged, target) => {
+    if (dragged.parentElement !== target.parentElement) return;
+    const fromSym = dragged.id.slice(5);
+    const toSym   = target.id.slice(5);
+    target.parentElement.insertBefore(dragged, target);
+    const fi = stocks.findIndex(s => s.symbol === fromSym);
+    if (fi === -1) return;
+    const [item] = stocks.splice(fi, 1);
+    const ti = stocks.findIndex(s => s.symbol === toSym);
+    stocks.splice(ti, 0, item);
+    saveStocks();
+  });
   fetchUsdKrw().then(() => {
     fetchIndexBar();
     fetchSectorBar();
@@ -755,6 +851,7 @@ document.addEventListener('DOMContentLoaded', () => {
   startCountdown();
   initSearch();
   initModal();
+  toggleMacroAnalysisView();
 });
 
 // ─── Countdown / Auto-refresh ────────────────────────────
@@ -803,6 +900,21 @@ function loadIndexOrder() {
     }
   } catch {}
   return [...INDICES];
+}
+
+async function loadIndexOrderFromDB() {
+  try {
+    const res = await fetch('/api/db/settings/indexBarOrder');
+    if (!res.ok) return;
+    const { value } = await res.json();
+    const saved = JSON.parse(value);
+    if (saved.length) {
+      const ordered = saved.map(sym => INDICES.find(i => i.sym === sym)).filter(Boolean);
+      const rest    = INDICES.filter(i => !saved.includes(i.sym));
+      _indexOrder = [...ordered, ...rest];
+      renderIndexChips();
+    }
+  } catch {}
 }
 
 let _indexOrder = loadIndexOrder();
@@ -855,13 +967,36 @@ function initIndexBar() {
     const si = _indexOrder.findIndex(i => i.sym === srcSym);
     const ti = _indexOrder.findIndex(i => i.sym === tgtSym);
     _indexOrder.splice(ti, 0, _indexOrder.splice(si, 1)[0]);
-    localStorage.setItem('indexBarOrder', JSON.stringify(_indexOrder.map(i => i.sym)));
+    const orderJson = JSON.stringify(_indexOrder.map(i => i.sym));
+    localStorage.setItem('indexBarOrder', orderJson);
+    fetch('/api/db/settings/indexBarOrder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: orderJson }),
+    }).catch(() => {});
     renderIndexChips();
     fetchIndexBar();
   });
 
   row.addEventListener('dragend', () => {
     row.querySelectorAll('.index-chip').forEach(c => c.classList.remove('ic-dragging', 'ic-drag-over'));
+  });
+
+  addTouchDrag(row, '.index-chip', null, (dragged, target) => {
+    const srcSym = dragged.dataset.sym;
+    const tgtSym = target.dataset.sym;
+    const si = _indexOrder.findIndex(i => i.sym === srcSym);
+    const ti = _indexOrder.findIndex(i => i.sym === tgtSym);
+    if (si === -1 || ti === -1) return;
+    _indexOrder.splice(ti, 0, _indexOrder.splice(si, 1)[0]);
+    const orderJson = JSON.stringify(_indexOrder.map(i => i.sym));
+    localStorage.setItem('indexBarOrder', orderJson);
+    fetch('/api/db/settings/indexBarOrder', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: orderJson }),
+    }).catch(() => {});
+    renderIndexChips();
+    fetchIndexBar();
   });
 }
 
@@ -1287,7 +1422,20 @@ function createCard({ symbol, name }) {
 }
 
 function saveStocks() {
-  localStorage.setItem('stocks', JSON.stringify(stocks));
+  fetch('/api/db/stocks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stocks }),
+  }).catch(() => {});
+}
+
+async function loadStocksFromDB() {
+  try {
+    const res = await fetch('/api/db/stocks');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.length > 0) stocks = data;
+  } catch {}
 }
 
 let _sectorRerenderTimer = null;
@@ -1546,26 +1694,39 @@ function initMacroAnalysisView() {
   document.getElementById('macroAnalysisBtn').addEventListener('click', toggleMacroAnalysisView);
   document.getElementById('macroAnalysisBackBtn').addEventListener('click', hideAllViews);
 
-  // 저장된 섹션 순서 복원
+  // 저장된 섹션 순서 복원 (DB 우선, fallback: localStorage)
   const view = document.getElementById('macroAnalysisView');
-  try {
-    const saved = JSON.parse(localStorage.getItem('mavSectionOrder') || '[]');
+  async function restoreMavOrder() {
+    let saved = [];
+    try {
+      const res = await fetch('/api/db/settings/mavSectionOrder');
+      if (res.ok) saved = JSON.parse((await res.json()).value);
+    } catch {}
+    if (!saved.length) {
+      try { saved = JSON.parse(localStorage.getItem('mavSectionOrder') || '[]'); } catch {}
+    }
     saved.forEach(key => {
       const sec = view.querySelector(`.mav-section[data-section="${key}"]`);
       if (sec) view.appendChild(sec);
     });
-  } catch {}
+  }
+  restoreMavOrder();
 
   // 섹션 드래그 앤 드롭
   let dragSrc = null;
-  let mavDragAllowed = false;
 
   view.addEventListener('mousedown', e => {
-    mavDragAllowed = !!e.target.closest('.mav-sec-header');
+    const header = e.target.closest('.mav-sec-header');
+    if (!header) return;
+    const section = header.closest('.mav-section[data-section]');
+    if (section) section.setAttribute('draggable', 'true');
+  });
+
+  view.addEventListener('mouseup', () => {
+    view.querySelectorAll('.mav-section[draggable]').forEach(s => s.removeAttribute('draggable'));
   });
 
   view.addEventListener('dragstart', e => {
-    if (!mavDragAllowed) { e.preventDefault(); return; }
     dragSrc = e.target.closest('.mav-section[data-section]');
     if (!dragSrc) return;
     dragSrc.classList.add('mav-dragging');
@@ -1587,14 +1748,36 @@ function initMacroAnalysisView() {
     if (e.clientY < rect.top + rect.height / 2) target.before(dragSrc);
     else target.after(dragSrc);
     const order = [...view.querySelectorAll('.mav-section[data-section]')].map(s => s.dataset.section);
-    localStorage.setItem('mavSectionOrder', JSON.stringify(order));
+    const orderJson = JSON.stringify(order);
+    localStorage.setItem('mavSectionOrder', orderJson);
+    fetch('/api/db/settings/mavSectionOrder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: orderJson }),
+    }).catch(() => {});
     view.querySelectorAll('.mav-section').forEach(s => s.classList.remove('mav-drag-over'));
   });
 
   view.addEventListener('dragend', () => {
     if (dragSrc) dragSrc.classList.remove('mav-dragging');
-    view.querySelectorAll('.mav-section').forEach(s => s.classList.remove('mav-drag-over'));
+    view.querySelectorAll('.mav-section').forEach(s => {
+      s.classList.remove('mav-drag-over');
+      s.removeAttribute('draggable');
+    });
     dragSrc = null;
+  });
+
+  addTouchDrag(view, '.mav-section[data-section]', '.mav-sec-header', (dragged, target, touchY) => {
+    const rect = target.getBoundingClientRect();
+    if (touchY < rect.top + rect.height / 2) target.before(dragged);
+    else target.after(dragged);
+    const order = [...view.querySelectorAll('.mav-section[data-section]')].map(s => s.dataset.section);
+    const orderJson = JSON.stringify(order);
+    localStorage.setItem('mavSectionOrder', orderJson);
+    fetch('/api/db/settings/mavSectionOrder', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: orderJson }),
+    }).catch(() => {});
   });
 }
 
@@ -1608,6 +1791,9 @@ function toggleMacroAnalysisView() {
     loadYieldCurve();
     loadSectorHeatmap();
     loadVixChart();
+    loadIsmPmiChart();
+    loadLeiChart();
+    loadTgaChart();
   }
 }
 
@@ -1621,7 +1807,7 @@ const YC_PERIOD_LABELS = { '1m': '1개월', '3m': '3개월', '6m': '6개월', '1
 
 let yieldCurveYieldChart  = null;
 let yieldCurveSpreadChart = null;
-let yieldCurvePeriod      = '1y';
+let yieldCurvePeriod      = '5y';
 let yieldCurveHidden      = new Set(['3Y', '5Y']);
 let _yieldData            = {};
 let _ycSyncTime           = null;
@@ -1679,28 +1865,43 @@ const ycSyncPlugin = {
   },
 };
 
+const SPREAD_ZONES = [
+  { from: -Infinity, to: -0.5, color: 'rgba(255,70,85,0.22)'   },  // 심한 역전
+  { from: -0.5,      to:  0,   color: 'rgba(255,146,43,0.18)'  },  // 역전
+  { from:  0,        to:  0.5, color: 'rgba(255,217,61,0.15)'  },  // 평탄
+  { from:  0.5,      to: Infinity, color: 'rgba(0,209,122,0.15)' }, // 정상
+];
+
 const inversionBgPlugin = {
   id: 'inversionBg',
   beforeDraw(chart) {
-    const spread = _yieldData.spread || [];
-    if (!spread.length) return;
     const { ctx: c, chartArea, scales } = chart;
     if (!chartArea) return;
     const { top, bottom, left, right } = chartArea;
+    const yScale = scales.y;
     c.save();
     c.beginPath();
     c.rect(left, top, right - left, bottom - top);
     c.clip();
-    c.fillStyle = 'rgba(255, 70, 85, 0.18)';
-    let inRegion = false, rx = null;
-    for (const pt of spread) {
-      const px = scales.x.getPixelForValue(new Date(pt.t).getTime());
-      if (pt.v > 0 && !inRegion)  { inRegion = true;  rx = px; }
-      else if (pt.v <= 0 && inRegion) { inRegion = false; c.fillRect(rx, top, px - rx, bottom - top); }
-    }
-    if (inRegion) {
-      const px = scales.x.getPixelForValue(new Date(spread[spread.length - 1].t).getTime());
-      c.fillRect(rx, top, px - rx, bottom - top);
+    SPREAD_ZONES.forEach(zone => {
+      const capFrom = zone.from === -Infinity ? yScale.min : zone.from;
+      const capTo   = zone.to   ===  Infinity ? yScale.max : zone.to;
+      const yTop    = yScale.getPixelForValue(Math.min(capTo,   yScale.max));
+      const yBottom = yScale.getPixelForValue(Math.max(capFrom, yScale.min));
+      if (yBottom <= yTop) return;
+      c.fillStyle = zone.color;
+      c.fillRect(left, yTop, right - left, yBottom - yTop);
+    });
+    // 0 기준선 강조
+    const zeroY = yScale.getPixelForValue(0);
+    if (zeroY >= top && zeroY <= bottom) {
+      c.strokeStyle = 'rgba(200,200,220,0.5)';
+      c.lineWidth = 1.5;
+      c.setLineDash([]);
+      c.beginPath();
+      c.moveTo(left, zeroY);
+      c.lineTo(right, zeroY);
+      c.stroke();
     }
     c.restore();
   },
@@ -1724,6 +1925,12 @@ async function loadYieldCurve() {
              </button>`
           ).join('')}
         </div>
+      </div>
+      <div class="yc-zone-legend">
+        <span class="yc-zl-item yc-zl-severe"><span class="yc-zl-dot"></span>심한 역전 <em>(-0.5%↓) 경기침체 임박</em></span>
+        <span class="yc-zl-item yc-zl-invert"><span class="yc-zl-dot"></span>역전 <em>(-0.5~0%) 침체 경고</em></span>
+        <span class="yc-zl-item yc-zl-flat"><span class="yc-zl-dot"></span>평탄 <em>(0~+0.5%) 둔화 주의</em></span>
+        <span class="yc-zl-item yc-zl-normal"><span class="yc-zl-dot"></span>정상 <em>(+0.5%↑) 경기 확장</em></span>
       </div>
       <div class="yc-chart-wrap">
         <span class="yc-loading" id="ycLoadingMsg">로딩 중...</span>
@@ -1780,8 +1987,8 @@ async function fetchYieldHistory() {
     const spread = _yieldData.spread || [];
     if (spread.length > 0) {
       const last = spread[spread.length - 1].v;
-      statusEl.textContent = last > 0 ? '역전 (경기침체 경고)' : '정상';
-      statusEl.className   = `yc-status-badge ${last > 0 ? 'inverted' : 'normal'}`;
+      statusEl.textContent = last < 0 ? '역전 (경기침체 경고)' : '정상';
+      statusEl.className   = `yc-status-badge ${last < 0 ? 'inverted' : 'normal'}`;
     }
 
     renderYieldCurveChart();
@@ -1851,7 +2058,7 @@ function renderYieldCurveChart() {
     type: 'line',
     data: {
       datasets: [{
-        label: '스프레드 (2Y-10Y)',
+        label: '스프레드 (10Y-2Y)',
         data: (_yieldData.spread || []).map(d => ({ x: d.t, y: d.v })),
         borderColor: '#cc5de8',
         backgroundColor: 'transparent',
@@ -1924,7 +2131,7 @@ function getVixLevel(v) {
 }
 
 let vixChart = null;
-let vixPeriod = '1y';
+let vixPeriod = '5y';
 let _vixData  = [];
 
 async function loadVixChart() {
@@ -2074,6 +2281,507 @@ function renderVixChart() {
           grid: { color: '#252836' },
           ticks: { color: '#7b7f97', font: { size: 11 } },
           title: { display: true, text: 'VIX', color: '#7b7f97', font: { size: 11 } },
+        },
+      },
+    },
+  });
+}
+
+// ─── ISM 제조업 PMI ────────────────────────────────────────────
+const ISM_ZONES = [
+  { from: -Infinity, to: -20, label: '침체',    color: 'rgba(255,70,85,0.22)',   badge: 'ism-recession' },
+  { from: -20,       to:   0, label: '수축',    color: 'rgba(255,146,43,0.18)',  badge: 'ism-contract'  },
+  { from:   0,       to:  20, label: '확장',    color: 'rgba(0,209,122,0.15)',   badge: 'ism-expand'    },
+  { from:  20,  to: Infinity, label: '강한 확장', color: 'rgba(0,209,122,0.28)', badge: 'ism-strong'    },
+];
+
+function getIsmLevel(v) {
+  return ISM_ZONES.find(z => v < z.to) || ISM_ZONES[ISM_ZONES.length - 1];
+}
+
+let ismPmiChart  = null;
+let ismPmiPeriod = '5y';
+let _ismPmiData  = [];
+
+const ISM_PERIOD_LABELS = { '1y': '1년', '2y': '2년', '3y': '3년', '5y': '5년', '10y': '10년' };
+
+async function loadIsmPmiChart() {
+  const container = document.getElementById('ismPmiChartRow');
+  if (!container.querySelector('.yc-toolbar')) {
+    container.innerHTML = `
+      <div class="yc-toolbar">
+        <div class="yc-periods">
+          ${Object.entries(ISM_PERIOD_LABELS).map(([p, label]) =>
+            `<button class="yc-pbtn${p === ismPmiPeriod ? ' active' : ''}" data-p="${p}">${label}</button>`
+          ).join('')}
+        </div>
+        <div class="tga-zone-legend">
+          <span class="tga-zl-item" style="color:rgba(255,70,85,0.9)"><span class="tga-zl-dot" style="background:rgba(255,70,85,0.9)"></span>침체 <em>-20↓</em></span>
+          <span class="tga-zl-item" style="color:rgba(255,146,43,0.9)"><span class="tga-zl-dot" style="background:rgba(255,146,43,0.9)"></span>수축 <em>-20~0</em></span>
+          <span class="tga-zl-item" style="color:rgba(0,209,122,0.9)"><span class="tga-zl-dot" style="background:rgba(0,209,122,0.9)"></span>확장 <em>0~20</em></span>
+          <span class="tga-zl-item" style="color:rgba(0,209,122,1)"><span class="tga-zl-dot" style="background:rgba(0,209,122,1)"></span>강한 확장 <em>20↑</em></span>
+        </div>
+      </div>
+      <div class="yc-chart-wrap vix-chart-wrap">
+        <span class="yc-loading" id="ismPmiLoadingMsg">로딩 중...</span>
+        <canvas id="ismPmiCanvas" style="display:none"></canvas>
+      </div>`;
+
+    container.querySelectorAll('.yc-pbtn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        container.querySelectorAll('.yc-pbtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        ismPmiPeriod = btn.dataset.p;
+        fetchIsmPmiHistory();
+      });
+    });
+  }
+  await fetchIsmPmiHistory();
+}
+
+async function fetchIsmPmiHistory() {
+  const loadMsg = document.getElementById('ismPmiLoadingMsg');
+  const canvas  = document.getElementById('ismPmiCanvas');
+  const badge   = document.getElementById('ismPmiStatusBadge');
+  if (loadMsg) loadMsg.style.display = 'inline';
+  if (canvas)  canvas.style.display  = 'none';
+
+  try {
+    const res = await fetch(`/api/ism-pmi-history?period=${ismPmiPeriod}`);
+    if (!res.ok) throw new Error('fetch failed');
+    _ismPmiData = await res.json();
+
+    if (_ismPmiData.length >= 2 && badge) {
+      const last  = _ismPmiData[_ismPmiData.length - 1].v;
+      const prev  = _ismPmiData[_ismPmiData.length - 2].v;
+      const level = getIsmLevel(last);
+      const arrow = last > prev ? '▲' : '▼';
+      badge.textContent = `${last.toFixed(1)}  ${level.label} ${arrow}`;
+      badge.className   = `ism-badge ${level.badge}`;
+    }
+
+    renderIsmPmiChart();
+    if (loadMsg) loadMsg.style.display = 'none';
+    if (canvas)  canvas.style.display  = 'block';
+  } catch {
+    if (loadMsg) { loadMsg.style.display = 'inline'; loadMsg.textContent = '데이터 로드 실패'; }
+  }
+}
+
+function renderIsmPmiChart() {
+  const canvas = document.getElementById('ismPmiCanvas');
+  if (!canvas) return;
+  if (ismPmiChart) { ismPmiChart.destroy(); ismPmiChart = null; }
+
+  const ctx = canvas.getContext('2d');
+
+  const ismZoneBgPlugin = {
+    id: 'ismZoneBg',
+    beforeDraw(chart) {
+      const { ctx: c, chartArea, scales } = chart;
+      if (!chartArea) return;
+      const { top, left, right, bottom } = chartArea;
+      const yScale = scales.y;
+      c.save();
+      c.beginPath();
+      c.rect(left, top, right - left, bottom - top);
+      c.clip();
+      ISM_ZONES.forEach(zone => {
+        const capTo   = zone.to === Infinity ? yScale.max : zone.to;
+        const yTop    = yScale.getPixelForValue(Math.min(capTo,     yScale.max));
+        const yBottom = yScale.getPixelForValue(Math.max(zone.from, yScale.min));
+        if (yBottom <= yTop) return;
+        c.fillStyle = zone.color;
+        c.fillRect(left, yTop, right - left, yBottom - yTop);
+      });
+      [-20, 0, 20].forEach(val => {
+        if (val <= yScale.min || val >= yScale.max) return;
+        const py = yScale.getPixelForValue(val);
+        c.strokeStyle = val === 0 ? 'rgba(200,200,220,0.5)' : 'rgba(200,200,220,0.25)';
+        c.lineWidth   = val === 0 ? 1.5 : 1;
+        c.setLineDash(val === 0 ? [] : [4, 4]);
+        c.beginPath();
+        c.moveTo(left, py);
+        c.lineTo(right, py);
+        c.stroke();
+      });
+      c.restore();
+    },
+  };
+
+  ismPmiChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: 'ISM PMI',
+        data: _ismPmiData.map(d => ({ x: new Date(d.t).getTime(), y: d.v })),
+        borderColor: '#4f7eff',
+        backgroundColor: 'rgba(79,126,255,0.08)',
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        fill: false,
+        tension: 0.3,
+      }],
+    },
+    plugins: [ismZoneBgPlugin],
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.parsed.y.toFixed(1)}  (${getIsmLevel(ctx.parsed.y).label})`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'timeseries',
+          time: { tooltipFormat: 'yyyy-MM-dd', displayFormats: { month: 'yy-MM', year: 'yyyy' } },
+          grid: { color: '#252836' },
+          ticks: { color: '#7b7f97', font: { size: 11 }, maxTicksLimit: 8 },
+        },
+        y: {
+          position: 'left',
+          grid: {
+            color: ctx => ctx.tick.value === 0 ? 'rgba(200,200,220,0.3)' : '#252836',
+            lineWidth: ctx => ctx.tick.value === 0 ? 2 : 1,
+          },
+          ticks: {
+            color: '#7b7f97',
+            font: { size: 11 },
+            callback: val => val.toFixed(0),
+          },
+          title: { display: true, text: '제조업 현황 (기준=0)', color: '#7b7f97', font: { size: 11 } },
+        },
+      },
+    },
+  });
+}
+
+// ─── LEI (경기선행지수) ────────────────────────────────────────────
+const LEI_PERIOD_LABELS = { '1y': '1년', '2y': '2년', '3y': '3년', '5y': '5년', '10y': '10년' };
+
+let leiChart  = null;
+let leiPeriod = '5y';
+let _leiData  = [];
+
+async function loadLeiChart() {
+  const container = document.getElementById('leiChartRow');
+  if (!container.querySelector('.yc-toolbar')) {
+    container.innerHTML = `
+      <div class="yc-toolbar">
+        <div class="yc-periods">
+          ${Object.entries(LEI_PERIOD_LABELS).map(([p, label]) =>
+            `<button class="yc-pbtn${p === leiPeriod ? ' active' : ''}" data-p="${p}">${label}</button>`
+          ).join('')}
+        </div>
+      </div>
+      <div class="yc-chart-wrap vix-chart-wrap">
+        <span class="yc-loading" id="leiLoadingMsg">로딩 중...</span>
+        <canvas id="leiCanvas" style="display:none"></canvas>
+      </div>`;
+
+    container.querySelectorAll('.yc-pbtn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        container.querySelectorAll('.yc-pbtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        leiPeriod = btn.dataset.p;
+        fetchLeiHistory();
+      });
+    });
+  }
+  await fetchLeiHistory();
+}
+
+async function fetchLeiHistory() {
+  const loadMsg = document.getElementById('leiLoadingMsg');
+  const canvas  = document.getElementById('leiCanvas');
+  const badge   = document.getElementById('leiStatusBadge');
+  if (loadMsg) loadMsg.style.display = 'inline';
+  if (canvas)  canvas.style.display  = 'none';
+
+  try {
+    const res = await fetch(`/api/lei-history?period=${leiPeriod}`);
+    if (!res.ok) throw new Error('fetch failed');
+    _leiData = await res.json();
+
+    if (_leiData.length >= 2 && badge) {
+      const last = _leiData[_leiData.length - 1].v;
+      const prev = _leiData[_leiData.length - 2].v;
+      const isExpanding = last > 100;
+      const isRising    = last > prev;
+      badge.textContent = `${last.toFixed(2)}  ${isExpanding ? '확장' : '수축'} ${isRising ? '▲' : '▼'}`;
+      badge.className   = `lei-badge ${isExpanding ? 'lei-expand' : 'lei-contract'}`;
+    }
+
+    renderLeiChart();
+    if (loadMsg) loadMsg.style.display = 'none';
+    if (canvas)  canvas.style.display  = 'block';
+  } catch {
+    if (loadMsg) { loadMsg.style.display = 'inline'; loadMsg.textContent = '데이터 로드 실패'; }
+  }
+}
+
+function renderLeiChart() {
+  const canvas = document.getElementById('leiCanvas');
+  if (!canvas) return;
+  if (leiChart) { leiChart.destroy(); leiChart = null; }
+
+  const ctx = canvas.getContext('2d');
+
+  const leiBgPlugin = {
+    id: 'leiBg',
+    beforeDraw(chart) {
+      const { ctx: c, chartArea, scales } = chart;
+      if (!chartArea) return;
+      const { top, left, right, bottom } = chartArea;
+      const yScale = scales.y;
+      const refY = yScale.getPixelForValue(100);
+      const clampedRef = Math.max(top, Math.min(bottom, refY));
+      c.save();
+      c.beginPath();
+      c.rect(left, top, right - left, bottom - top);
+      c.clip();
+      // 100 위 = 확장 (초록)
+      if (clampedRef > top) {
+        c.fillStyle = 'rgba(0,209,122,0.10)';
+        c.fillRect(left, top, right - left, clampedRef - top);
+      }
+      // 100 아래 = 수축 (빨강)
+      if (clampedRef < bottom) {
+        c.fillStyle = 'rgba(255,70,85,0.15)';
+        c.fillRect(left, clampedRef, right - left, bottom - clampedRef);
+      }
+      // 100 기준선
+      if (refY >= top && refY <= bottom) {
+        c.strokeStyle = 'rgba(200,200,220,0.5)';
+        c.lineWidth = 1.5;
+        c.setLineDash([]);
+        c.beginPath();
+        c.moveTo(left, refY);
+        c.lineTo(right, refY);
+        c.stroke();
+      }
+      c.restore();
+    },
+  };
+
+  leiChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: 'LEI',
+        data: _leiData.map(d => ({ x: new Date(d.t).getTime(), y: d.v })),
+        borderColor: '#ffd93d',
+        backgroundColor: 'rgba(255,217,61,0.08)',
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        fill: false,
+        tension: 0.3,
+      }],
+    },
+    plugins: [leiBgPlugin],
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.parsed.y.toFixed(2)}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'timeseries',
+          time: { tooltipFormat: 'yyyy-MM-dd', displayFormats: { month: 'yy-MM', year: 'yyyy' } },
+          grid: { color: '#252836' },
+          ticks: { color: '#7b7f97', font: { size: 11 }, maxTicksLimit: 8 },
+        },
+        y: {
+          position: 'left',
+          grid: {
+            color: (ctx) => ctx.tick.value === 100 ? 'rgba(200,200,220,0.3)' : '#252836',
+            lineWidth: (ctx) => ctx.tick.value === 100 ? 2 : 1,
+          },
+          ticks: {
+            color: '#7b7f97',
+            font: { size: 11 },
+            callback: val => val.toFixed(1),
+          },
+          title: { display: true, text: 'OECD CLI (기준=100)', color: '#7b7f97', font: { size: 11 } },
+        },
+      },
+    },
+  });
+}
+
+// ─── TGA (재무부 일반계좌) ────────────────────────────────────────────
+const TGA_ZONES = [
+  { from: 0,   to: 200,      label: '위험', color: 'rgba(255,70,85,0.30)',   badge: 'tga-danger'  },
+  { from: 200, to: 400,      label: '주의', color: 'rgba(255,217,61,0.25)',  badge: 'tga-caution' },
+  { from: 400, to: Infinity, label: '정상', color: 'rgba(0,209,122,0.20)',   badge: 'tga-normal'  },
+];
+
+function getTgaLevel(v) {
+  return TGA_ZONES.find(z => v < z.to) || TGA_ZONES[TGA_ZONES.length - 1];
+}
+
+let tgaChart  = null;
+let tgaPeriod = '5y';
+let _tgaData  = [];
+
+async function loadTgaChart() {
+  const container = document.getElementById('tgaChartRow');
+  if (!container.querySelector('.yc-toolbar')) {
+    const periods = [['1y','1년'],['2y','2년'],['3y','3년'],['5y','5년']];
+    container.innerHTML = `
+      <div class="yc-toolbar">
+        <div class="yc-periods">
+          ${periods.map(([p, label]) =>
+            `<button class="yc-pbtn${p === tgaPeriod ? ' active' : ''}" data-p="${p}">${label}</button>`
+          ).join('')}
+        </div>
+        <div class="tga-zone-legend">
+          <span class="tga-zl-item tga-zl-danger"><span class="tga-zl-dot"></span>위험 <em>&lt; $200B</em></span>
+          <span class="tga-zl-item tga-zl-caution"><span class="tga-zl-dot"></span>주의 <em>$200~400B</em></span>
+          <span class="tga-zl-item tga-zl-normal"><span class="tga-zl-dot"></span>정상 <em>&gt; $400B</em></span>
+        </div>
+      </div>
+      <div class="yc-chart-wrap vix-chart-wrap">
+        <span class="yc-loading" id="tgaLoadingMsg">로딩 중...</span>
+        <canvas id="tgaCanvas" style="display:none"></canvas>
+      </div>`;
+
+    container.querySelectorAll('.yc-pbtn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        container.querySelectorAll('.yc-pbtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        tgaPeriod = btn.dataset.p;
+        fetchTgaHistory();
+      });
+    });
+  }
+  await fetchTgaHistory();
+}
+
+async function fetchTgaHistory() {
+  const loadMsg = document.getElementById('tgaLoadingMsg');
+  const canvas  = document.getElementById('tgaCanvas');
+  const badge   = document.getElementById('tgaStatusBadge');
+  if (loadMsg) loadMsg.style.display = 'inline';
+  if (canvas)  canvas.style.display  = 'none';
+
+  try {
+    const res = await fetch(`/api/tga-history?period=${tgaPeriod}`);
+    if (!res.ok) throw new Error('fetch failed');
+    _tgaData = await res.json();
+
+    if (_tgaData.length > 0 && badge) {
+      const last  = _tgaData[_tgaData.length - 1].v;
+      const level = getTgaLevel(last);
+      badge.textContent = `$${last.toFixed(0)}B  ${level.label}`;
+      badge.className   = `tga-badge ${level.badge}`;
+    }
+
+    renderTgaChart();
+    if (loadMsg) loadMsg.style.display = 'none';
+    if (canvas)  canvas.style.display  = 'block';
+  } catch {
+    if (loadMsg) { loadMsg.style.display = 'inline'; loadMsg.textContent = '데이터 로드 실패'; }
+  }
+}
+
+function renderTgaChart() {
+  const canvas = document.getElementById('tgaCanvas');
+  if (!canvas) return;
+  if (tgaChart) { tgaChart.destroy(); tgaChart = null; }
+
+  const ctx = canvas.getContext('2d');
+
+  const tgaZoneBgPlugin = {
+    id: 'tgaZoneBg',
+    beforeDraw(chart) {
+      const { ctx: c, chartArea, scales } = chart;
+      if (!chartArea) return;
+      const { top, left, right } = chartArea;
+      const yScale = scales.y;
+      c.save();
+      c.beginPath();
+      c.rect(left, top, right - left, chartArea.bottom - top);
+      c.clip();
+      TGA_ZONES.forEach(zone => {
+        const capTo   = zone.to === Infinity ? yScale.max : zone.to;
+        const yTop    = yScale.getPixelForValue(Math.min(capTo,     yScale.max));
+        const yBottom = yScale.getPixelForValue(Math.max(zone.from, yScale.min));
+        if (yBottom <= yTop) return;
+        c.fillStyle = zone.color;
+        c.fillRect(left, yTop, right - left, yBottom - yTop);
+      });
+      [200, 400].forEach(val => {
+        if (val <= yScale.min || val >= yScale.max) return;
+        const py = yScale.getPixelForValue(val);
+        c.strokeStyle = 'rgba(200,200,220,0.2)';
+        c.lineWidth = 1;
+        c.setLineDash([4, 4]);
+        c.beginPath();
+        c.moveTo(left, py);
+        c.lineTo(right, py);
+        c.stroke();
+      });
+      c.restore();
+    },
+  };
+
+  tgaChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: 'TGA',
+        data: _tgaData.map(d => ({ x: new Date(d.t).getTime(), y: d.v })),
+        borderColor: '#4f7eff',
+        backgroundColor: 'rgba(79,126,255,0.12)',
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        fill: true,
+        tension: 0.3,
+      }],
+    },
+    plugins: [tgaZoneBgPlugin],
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `$${ctx.parsed.y.toFixed(1)}B`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'timeseries',
+          time: { tooltipFormat: 'yyyy-MM-dd', displayFormats: { month: 'yy-MM', year: 'yyyy' } },
+          grid: { color: '#252836' },
+          ticks: { color: '#7b7f97', font: { size: 11 }, maxTicksLimit: 8 },
+        },
+        y: {
+          position: 'left',
+          min: 0,
+          grid: { color: '#252836' },
+          ticks: {
+            color: '#7b7f97',
+            font: { size: 11 },
+            callback: val => `$${val}B`,
+          },
+          title: { display: true, text: '잔액 (십억$)', color: '#7b7f97', font: { size: 11 } },
         },
       },
     },
