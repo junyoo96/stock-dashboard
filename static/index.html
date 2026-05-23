@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=43" />
+  <link rel="stylesheet" href="style.css?v=55" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -34,6 +34,20 @@
     <div class="index-bar">
       <div id="indexRow" class="index-row"></div>
     </div>
+    <div class="macro-section">
+      <div class="macro-inner">
+        <div class="macro-header" id="macroSectionToggle">
+          <span class="macro-title">거시경제 지표</span>
+          <span class="macro-arrow">▾</span>
+          <button id="macroCatManagerBtn" class="mc-mgr-btn">분류 관리</button>
+          <div class="macro-search-wrap">
+            <input id="macroSearchInput" type="text" placeholder="지표 검색 (예: 금리, VIX, 원유...)" autocomplete="off" />
+            <div id="macroDropdown" class="dropdown hidden"></div>
+          </div>
+        </div>
+        <div id="macroRow" class="macro-row"></div>
+      </div>
+    </div>
     <div class="sector-bar">
       <div id="sectorRow" class="sector-row"></div>
     </div>
@@ -59,17 +73,6 @@
         </div>
         <div id="sectorChartLegend" class="scs-legend"></div>
       </div>
-    </div>
-
-    <div class="macro-section">
-      <div class="macro-header">
-        <span class="macro-title">거시경제 지표</span>
-        <div class="macro-search-wrap">
-          <input id="macroSearchInput" type="text" placeholder="지표 검색 (예: 금리, VIX, 원유...)" autocomplete="off" />
-          <div id="macroDropdown" class="dropdown hidden"></div>
-        </div>
-      </div>
-      <div id="macroRow" class="macro-row"></div>
     </div>
 
     <div id="grid" class="grid"></div>
@@ -210,6 +213,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=44"></script>
+  <script src="app.js?v=56"></script>
 </body>
 </html>

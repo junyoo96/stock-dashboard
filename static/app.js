@@ -542,10 +542,34 @@ function initSectorChartToggle() {
   });
 }
 
-let macroIndicators = JSON.parse(localStorage.getItem('macroIndicators') || '[]');
+let macroIndicators = [];
 
 function saveMacroIndicators() {
-  localStorage.setItem('macroIndicators', JSON.stringify(macroIndicators));
+  const json = JSON.stringify(macroIndicators);
+  localStorage.setItem('macroIndicators', json);
+  fetch('/api/db/settings/macroIndicators', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: json }),
+  }).catch(() => {});
+}
+
+async function loadMacroIndicatorsFromDB() {
+  try {
+    const res = await fetch('/api/db/settings/macroIndicators');
+    if (res.ok) {
+      const data = await res.json();
+      const parsed = JSON.parse(data.value);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        macroIndicators = parsed;
+        return;
+      }
+    }
+  } catch {}
+  try {
+    const local = localStorage.getItem('macroIndicators');
+    if (local) macroIndicators = JSON.parse(local);
+  } catch {}
 }
 
 function formatMacroValue(symbol, price) {
@@ -627,7 +651,28 @@ function addTouchDrag(container, itemSel, handleSel, onDrop) {
 function initMacroSection() {
   renderMacroChips();
   initMacroSearch();
-  const row = document.getElementById('macroRow');
+
+  // 접기/펼치기
+  const toggle = document.getElementById('macroSectionToggle');
+  const row    = document.getElementById('macroRow');
+  const arrow  = toggle?.querySelector('.macro-arrow');
+  let collapsed = localStorage.getItem('macroSectionCollapsed') === '1';
+  const applyCollapse = () => {
+    row.classList.toggle('hidden', collapsed);
+    if (arrow) arrow.textContent = collapsed ? '▸' : '▾';
+  };
+  applyCollapse();
+  toggle?.addEventListener('click', e => {
+    if (e.target.closest('#macroCatManagerBtn') || e.target.closest('.macro-search-wrap')) return;
+    collapsed = !collapsed;
+    localStorage.setItem('macroSectionCollapsed', collapsed ? '1' : '0');
+    applyCollapse();
+  });
+
+  document.getElementById('macroCatManagerBtn')?.addEventListener('click', e => {
+    e.stopPropagation();
+    showCategoryManager();
+  });
   if (row) addTouchDrag(row, '.macro-chip', null, (dragged, target) => {
     const fromSym = dragged.dataset.sym;
     const toSym   = target.dataset.sym;
@@ -635,10 +680,15 @@ function initMacroSection() {
     const fi = macroIndicators.findIndex(m => m.symbol === fromSym);
     const ti = macroIndicators.findIndex(m => m.symbol === toSym);
     if (fi === -1 || ti === -1) return;
+    macroIndicators[fi].category = macroIndicators[ti].category;
     macroIndicators.splice(ti, 0, macroIndicators.splice(fi, 1)[0]);
     saveMacroIndicators();
     renderMacroChips();
   });
+}
+
+function getMacroCategories() {
+  return [...new Set(macroIndicators.map(m => m.category || '').filter(Boolean))];
 }
 
 function renderMacroChips() {
@@ -649,64 +699,81 @@ function renderMacroChips() {
     row.innerHTML = '<span class="macro-empty">아직 추가된 지표가 없습니다. 위 검색창에서 추가하세요.</span>';
     return;
   }
-  macroIndicators.forEach(({ symbol, name }) => {
-    const chip = document.createElement('div');
-    chip.className = 'macro-chip';
-    chip.id = `mc-${symbol.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    chip.dataset.sym = symbol;
-    chip.innerHTML = `
-      <div class="mc-info">
-        <span class="mc-name">${name}</span>
-        <span class="mc-sym">${symbol}</span>
-      </div>
-      <div class="mc-vals">
-        <span class="mc-val">—</span>
-        <span class="mc-change">—</span>
-      </div>
-      <button class="mc-remove" title="제거">✕</button>
-    `;
-    chip.querySelector('.mc-remove').addEventListener('click', e => {
-      e.stopPropagation();
-      macroIndicators = macroIndicators.filter(m => m.symbol !== symbol);
-      saveMacroIndicators();
-      renderMacroChips();
-    });
-    chip.addEventListener('click', e => {
-      if (e.target.closest('.mc-remove')) return;
-      openChart(symbol);
-    });
 
-    // 드래그 앤 드롭
-    chip.draggable = true;
-    chip.addEventListener('dragstart', e => {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', symbol);
-      setTimeout(() => chip.classList.add('dragging'), 0);
-    });
-    chip.addEventListener('dragend', () => {
-      chip.classList.remove('dragging');
-      document.querySelectorAll('.macro-chip').forEach(c => c.classList.remove('drag-over'));
-    });
-    chip.addEventListener('dragover', e => {
-      e.preventDefault();
-      document.querySelectorAll('.macro-chip').forEach(c => c.classList.remove('drag-over'));
-      if (!chip.classList.contains('dragging')) chip.classList.add('drag-over');
-    });
-    chip.addEventListener('drop', e => {
-      e.preventDefault();
-      chip.classList.remove('drag-over');
-      const fromSym = e.dataTransfer.getData('text/plain');
-      if (fromSym === symbol) return;
-      const fromIdx = macroIndicators.findIndex(m => m.symbol === fromSym);
-      const toIdx   = macroIndicators.findIndex(m => m.symbol === symbol);
-      if (fromIdx === -1 || toIdx === -1) return;
-      const [item] = macroIndicators.splice(fromIdx, 1);
-      macroIndicators.splice(toIdx, 0, item);
-      saveMacroIndicators();
-      renderMacroChips();
-    });
+  // 카테고리별 그룹화 (순서 유지)
+  const groups = new Map();
+  macroIndicators.forEach(m => {
+    const cat = m.category || '미분류';
+    if (!groups.has(cat)) groups.set(cat, []);
+    groups.get(cat).push(m);
+  });
 
-    row.appendChild(chip);
+  groups.forEach((items, category) => {
+    const group = document.createElement('div');
+    group.className = 'mc-cat-group';
+    group.dataset.cat = category;
+    group.innerHTML = `<div class="mc-cat-group-hd">${category}</div>`;
+    row.appendChild(group);
+
+    items.forEach(({ symbol, name }) => {
+      const chip = document.createElement('div');
+      chip.className = 'macro-chip';
+      chip.id = `mc-${symbol.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      chip.dataset.sym = symbol;
+      chip.innerHTML = `
+        <div class="mc-info">
+          <span class="mc-name">${name}</span>
+          <span class="mc-sym">${symbol}</span>
+        </div>
+        <div class="mc-vals">
+          <span class="mc-val">—</span>
+          <span class="mc-change">—</span>
+        </div>
+        <button class="mc-remove" title="제거">✕</button>
+      `;
+      chip.querySelector('.mc-remove').addEventListener('click', e => {
+        e.stopPropagation();
+        macroIndicators = macroIndicators.filter(m => m.symbol !== symbol);
+        saveMacroIndicators();
+        renderMacroChips();
+      });
+      chip.addEventListener('click', e => {
+        if (e.target.closest('.mc-remove')) return;
+        openChart(symbol);
+      });
+
+      chip.draggable = true;
+      chip.addEventListener('dragstart', e => {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', symbol);
+        setTimeout(() => chip.classList.add('dragging'), 0);
+      });
+      chip.addEventListener('dragend', () => {
+        chip.classList.remove('dragging');
+        document.querySelectorAll('.macro-chip').forEach(c => c.classList.remove('drag-over'));
+      });
+      chip.addEventListener('dragover', e => {
+        e.preventDefault();
+        document.querySelectorAll('.macro-chip').forEach(c => c.classList.remove('drag-over'));
+        if (!chip.classList.contains('dragging')) chip.classList.add('drag-over');
+      });
+      chip.addEventListener('drop', e => {
+        e.preventDefault();
+        chip.classList.remove('drag-over');
+        const fromSym = e.dataTransfer.getData('text/plain');
+        if (fromSym === symbol) return;
+        const fromIdx = macroIndicators.findIndex(m => m.symbol === fromSym);
+        const toIdx   = macroIndicators.findIndex(m => m.symbol === symbol);
+        if (fromIdx === -1 || toIdx === -1) return;
+        macroIndicators[fromIdx].category = macroIndicators[toIdx].category;
+        const [item] = macroIndicators.splice(fromIdx, 1);
+        macroIndicators.splice(toIdx, 0, item);
+        saveMacroIndicators();
+        renderMacroChips();
+      });
+
+      group.appendChild(chip);
+    });
   });
   fetchMacroBar();
 }
@@ -766,21 +833,180 @@ async function doMacroSearch(q) {
       </div>
     `).join('');
     dropdown.querySelectorAll('.dd-item').forEach(el => {
-      el.addEventListener('click', () => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
         const symbol = el.dataset.symbol;
         const name   = el.dataset.name;
-        if (!macroIndicators.some(m => m.symbol === symbol)) {
-          macroIndicators.push({ symbol, name });
-          saveMacroIndicators();
-          renderMacroChips();
+        if (macroIndicators.some(m => m.symbol === symbol)) {
+          document.getElementById('macroSearchInput').value = '';
+          dropdown.classList.add('hidden');
+          return;
         }
-        document.getElementById('macroSearchInput').value = '';
-        dropdown.classList.add('hidden');
+        showMacroCategoryPicker(dropdown, symbol, name);
       });
     });
   } catch {
     dropdown.innerHTML = '<div class="dd-msg" style="color:#ff4655">검색 실패</div>';
   }
+}
+
+function showMacroCategoryPicker(dropdown, symbol, name) {
+  const input = document.getElementById('macroSearchInput');
+  const cats  = getMacroCategories();
+  dropdown.innerHTML = `
+    <div class="mc-cat-picker">
+      <div class="mc-cat-picker-title"><strong>${name}</strong> 추가할 항목 선택</div>
+      <div class="mc-cat-existing">
+        ${cats.map(c => `<button class="mc-cat-btn" data-cat="${c}">${c}</button>`).join('')}
+        <button class="mc-cat-btn mc-cat-none" data-cat="">미분류</button>
+      </div>
+      <div class="mc-cat-new-row">
+        <input id="mcNewCatInput" type="text" placeholder="새 항목 이름 입력..." autocomplete="off" />
+        <button id="mcNewCatConfirm">추가</button>
+      </div>
+    </div>
+  `;
+  dropdown.classList.remove('hidden');
+  dropdown.querySelector('.mc-cat-picker').addEventListener('click', e => e.stopPropagation());
+
+  const addWith = cat => {
+    macroIndicators.push({ symbol, name, category: cat });
+    saveMacroIndicators();
+    renderMacroChips();
+    input.value = '';
+    dropdown.classList.add('hidden');
+  };
+
+  dropdown.querySelectorAll('.mc-cat-btn').forEach(btn => {
+    btn.addEventListener('click', () => addWith(btn.dataset.cat));
+  });
+
+  const newInput = document.getElementById('mcNewCatInput');
+  const confirm  = document.getElementById('mcNewCatConfirm');
+  confirm.addEventListener('click', () => {
+    const v = newInput.value.trim();
+    if (v) addWith(v);
+  });
+  newInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { const v = newInput.value.trim(); if (v) addWith(v); }
+    if (e.key === 'Escape') { input.value = ''; dropdown.classList.add('hidden'); }
+  });
+  setTimeout(() => newInput.focus(), 50);
+}
+
+function showCategoryManager() {
+  const existing = document.getElementById('mcMgrPanel');
+  if (existing) { existing.remove(); return; }
+
+  const panel = document.createElement('div');
+  panel.id = 'mcMgrPanel';
+  panel.className = 'mc-mgr-panel';
+
+  const rebuild = () => {
+    const cats = getMacroCategories();
+    // 분류별 그룹 (미분류 포함)
+    const groups = new Map();
+    groups.set('', macroIndicators.filter(m => !m.category));
+    cats.forEach(c => groups.set(c, macroIndicators.filter(m => m.category === c)));
+
+    const lanesHtml = [...groups.entries()].map(([cat, items]) => `
+      <div class="mc-lane">
+        <span class="mc-lane-label">${cat || '미분류'}</span>
+        <div class="mc-lane-chips">
+          ${items.map(m => `
+            <button class="mc-lane-chip" data-sym="${m.symbol}">${m.name}</button>
+          `).join('')}
+          ${items.length === 0 ? '<span class="mc-lane-empty">비어 있음</span>' : ''}
+        </div>
+      </div>
+    `).join('');
+
+    panel.innerHTML = `
+      <div class="mc-mgr-head">
+        <span class="mc-mgr-title">분류 관리</span>
+        <button class="mc-mgr-close" id="mcMgrClose">✕</button>
+      </div>
+      <div class="mc-mgr-new">
+        <input id="mcMgrNewInput" type="text" placeholder="새 분류 이름..." autocomplete="off" />
+        <button id="mcMgrNewAdd">추가</button>
+      </div>
+      <div class="mc-mgr-lanes">
+        ${macroIndicators.length === 0
+          ? '<div class="mc-mgr-empty">추가된 지표가 없습니다.</div>'
+          : lanesHtml}
+      </div>
+    `;
+
+    panel.querySelector('#mcMgrClose').addEventListener('click', () => panel.remove());
+
+    // 칩 클릭 → 분류 변경 팝오버
+    panel.querySelectorAll('.mc-lane-chip').forEach(chip => {
+      chip.addEventListener('click', e => {
+        e.stopPropagation();
+        panel.querySelectorAll('.mc-chip-picker').forEach(p => p.remove());
+        const sym  = chip.dataset.sym;
+        const cur  = macroIndicators.find(m => m.symbol === sym)?.category || '';
+        const allCats = getMacroCategories();
+        const picker = document.createElement('div');
+        picker.className = 'mc-chip-picker';
+        picker.innerHTML = [
+          ...allCats.map(c => `<button class="mc-cat-btn${cur === c ? ' mc-cat-active' : ''}" data-cat="${c}">${c}</button>`),
+          `<button class="mc-cat-btn mc-cat-none${!cur ? ' mc-cat-active' : ''}" data-cat="">미분류</button>`,
+        ].join('');
+        chip.appendChild(picker);
+        picker.querySelectorAll('.mc-cat-btn').forEach(btn => {
+          btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const idx = macroIndicators.findIndex(m => m.symbol === sym);
+            if (idx !== -1) macroIndicators[idx].category = btn.dataset.cat;
+            saveMacroIndicators();
+            renderMacroChips();
+            rebuild();
+          });
+        });
+      });
+    });
+
+    // 새 분류 추가
+    const doAdd = () => {
+      const v = panel.querySelector('#mcMgrNewInput').value.trim();
+      if (!v || getMacroCategories().includes(v)) return;
+      // 빈 분류 레인 삽입 후 rebuild
+      // (분류는 실제 지표가 있어야 저장되므로 임시 표시만)
+      const lanes = panel.querySelector('.mc-mgr-lanes');
+      const lane = document.createElement('div');
+      lane.className = 'mc-lane';
+      lane.innerHTML = `
+        <span class="mc-lane-label">${v}</span>
+        <div class="mc-lane-chips"><span class="mc-lane-empty">비어 있음</span></div>
+      `;
+      lanes.appendChild(lane);
+      panel.querySelector('#mcMgrNewInput').value = '';
+    };
+    panel.querySelector('#mcMgrNewAdd').addEventListener('click', doAdd);
+    panel.querySelector('#mcMgrNewInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doAdd();
+      e.stopPropagation();
+    });
+  };
+
+  rebuild();
+  document.body.appendChild(panel);
+
+  const btn  = document.getElementById('macroCatManagerBtn');
+  const rect = btn.getBoundingClientRect();
+  const W    = 380;
+  const left = Math.min(rect.left, window.innerWidth - W - 8);
+  panel.style.cssText = `position:fixed;top:${rect.bottom + 4}px;left:${Math.max(8, left)}px;z-index:9999;width:${W}px;`;
+
+  setTimeout(() => {
+    document.addEventListener('click', function closeMgr(e) {
+      if (!panel.contains(e.target) && e.target.id !== 'macroCatManagerBtn') {
+        panel.remove();
+        document.removeEventListener('click', closeMgr);
+      }
+    });
+  }, 0);
 }
 
 const INDICES = [
@@ -817,6 +1043,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // DB에서 저장된 데이터 먼저 로드
   await loadStocksFromDB();
   await loadIndexOrderFromDB();
+  await loadMacroIndicatorsFromDB();
 
   initGraphView();
   initStockChartsView();
@@ -1926,6 +2153,7 @@ async function loadYieldCurve() {
           ).join('')}
         </div>
       </div>
+      <div id="ycPerfRow" class="yc-perf-row"></div>
       <div class="yc-zone-legend">
         <span class="yc-zl-item yc-zl-severe"><span class="yc-zl-dot"></span>심한 역전 <em>(-0.5%↓) 경기침체 임박</em></span>
         <span class="yc-zl-item yc-zl-invert"><span class="yc-zl-dot"></span>역전 <em>(-0.5~0%) 침체 경고</em></span>
@@ -1963,11 +2191,38 @@ async function loadYieldCurve() {
           yieldCurveYieldChart?.setDatasetVisibility(idx, false);
         }
         yieldCurveYieldChart?.update();
+        renderYcPerfRow();
       });
     });
   }
 
   await fetchYieldHistory();
+}
+
+function renderYcPerfRow() {
+  const row = document.getElementById('ycPerfRow');
+  if (!row) return;
+  const periodLabel = YC_PERIOD_LABELS[yieldCurvePeriod] || yieldCurvePeriod;
+  const chips = YC_YIELD_SERIES
+    .filter(s => !yieldCurveHidden.has(s.key))
+    .map(s => {
+      const arr = _yieldData[s.key] || [];
+      if (arr.length < 2) return '';
+      const first = arr[0].v;
+      const last  = arr[arr.length - 1].v;
+      const diff  = last - first;
+      const sign  = diff >= 0 ? '+' : '';
+      const cls   = diff > 0 ? 'up' : diff < 0 ? 'down' : 'flat';
+      return `<span class="yc-perf-chip">
+        <span class="yc-dot" style="background:${s.color}"></span>
+        <span class="yc-perf-name">${s.label}</span>
+        <span class="yc-perf-val">${last.toFixed(2)}%</span>
+        <span class="yc-perf-chg ${cls}">${sign}${diff.toFixed(2)}%p</span>
+      </span>`;
+    }).join('');
+  row.innerHTML = chips
+    ? `<span class="yc-perf-label">${periodLabel} 변화</span>${chips}`
+    : '';
 }
 
 async function fetchYieldHistory() {
@@ -1992,6 +2247,7 @@ async function fetchYieldHistory() {
     }
 
     renderYieldCurveChart();
+    renderYcPerfRow();
     if (loadMsg) loadMsg.style.display = 'none';
     ['ycYieldCanvas', 'ycSpreadCanvas'].forEach(id => {
       const el = document.getElementById(id);
