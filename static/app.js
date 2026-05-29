@@ -69,9 +69,11 @@ function hideAllViews() {
   document.getElementById('graphView').classList.add('hidden');
   document.getElementById('stockChartsView').classList.add('hidden');
   document.getElementById('macroAnalysisView').classList.add('hidden');
+  document.getElementById('mindmapView').classList.add('hidden');
   document.getElementById('graphViewBtn').classList.remove('active');
   document.getElementById('stockChartsViewBtn').classList.remove('active');
   document.getElementById('macroAnalysisBtn').classList.remove('active');
+  document.getElementById('mindmapBtn').classList.remove('active');
   Object.values(stockChartsInstances).forEach(c => c?.destroy());
   stockChartsInstances = {};
   hiddenGraphStocks.clear();
@@ -1048,6 +1050,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initGraphView();
   initStockChartsView();
   initMacroAnalysisView();
+  await initMindmap();
   initSectorChartToggle();
   loadSectorChart();
   initIndexBar();
@@ -3112,5 +3115,1072 @@ function renderHeatmap() {
       }
       renderHeatmap();
     });
+  });
+}
+
+// ============================================================
+//  M I N D M A P
+// ============================================================
+
+let mmData = { categories: [], stocks: [], edges: [] };
+let mmTx = { z: 1, x: 0, y: 0 };
+let mmMode = 'normal'; // 'normal' | 'connect' | 'delete'
+let mmConnSrc = null;
+let mmDrag = null;
+let mmTouchSt = null;
+let mmSearchTimer = null;
+let mmLongPressTimer = null;
+let mmEdgeLPTimer = null;   // edge long-press timer
+let mmEdgeLPFired = false;  // whether long press already triggered
+
+const MM_CANVAS_SIZE = 6000;
+
+function mmGenId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// ── Storage ──────────────────────────────────────────────────
+
+function mmSave() {
+  const json = JSON.stringify(mmData);
+  try { localStorage.setItem('mmData_v1', json); } catch {}
+  fetch('/api/db/settings/mindmapData', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: json }),
+  }).catch(() => {});
+}
+
+async function mmLoad() {
+  let fromDB = false;
+  try {
+    const res = await fetch('/api/db/settings/mindmapData');
+    if (res.ok) {
+      const d = await res.json();
+      if (d.value) { mmData = JSON.parse(d.value); fromDB = true; }
+    }
+  } catch {}
+
+  // DB에 없으면 localStorage 폴백 (구버전 데이터 마이그레이션)
+  if (!fromDB) {
+    try {
+      const s = localStorage.getItem('mmData_v1');
+      if (s) {
+        mmData = JSON.parse(s);
+        // localStorage 데이터를 DB에 올려서 다음부터 동기화
+        mmSave();
+      }
+    } catch {}
+  }
+
+  if (!mmData.categories) mmData.categories = [];
+  if (!mmData.stocks)     mmData.stocks     = [];
+  if (!mmData.edges)      mmData.edges      = [];
+}
+
+// ── Transform ────────────────────────────────────────────────
+
+function mmApplyTransform() {
+  const canvas = document.getElementById('mmCanvas');
+  if (!canvas) return;
+  canvas.style.transform = `translate(${mmTx.x}px,${mmTx.y}px) scale(${mmTx.z})`;
+  const lbl = document.getElementById('mmZoomPct');
+  if (lbl) lbl.textContent = Math.round(mmTx.z * 100) + '%';
+}
+
+function mmResetView() {
+  const vp = document.getElementById('mmViewport');
+  if (!vp) return;
+  mmTx.x = vp.clientWidth  / 2 - MM_CANVAS_SIZE / 2;
+  mmTx.y = vp.clientHeight / 2 - MM_CANVAS_SIZE / 2;
+  mmTx.z = 1;
+  mmApplyTransform();
+}
+
+function mmZoomAt(factor, mx, my) {
+  const nz = Math.min(4, Math.max(0.15, mmTx.z * factor));
+  const dz = nz / mmTx.z;
+  mmTx.x = mx - dz * (mx - mmTx.x);
+  mmTx.y = my - dz * (my - mmTx.y);
+  mmTx.z = nz;
+  mmApplyTransform();
+}
+
+// ── Mouse events ─────────────────────────────────────────────
+
+function mmOnMouseMove(e) {
+  if (!mmDrag) return;
+  const dx = e.clientX - mmDrag.sx;
+  const dy = e.clientY - mmDrag.sy;
+
+  if (mmDrag.type === 'pan') {
+    mmTx.x = mmDrag.ox + dx;
+    mmTx.y = mmDrag.oy + dy;
+    mmApplyTransform();
+    return;
+  }
+
+  // Threshold: wait 5px before treating as a real drag
+  if (!mmDrag.moved) {
+    if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+    mmDrag.moved = true;
+    document.body.style.cursor = 'grabbing';
+  }
+
+  if (mmDrag.type === 'stock') {
+    const s = mmData.stocks.find(s => s.id === mmDrag.id);
+    if (!s || s.categoryId) return;
+    s.position.x = mmDrag.ox + dx / mmTx.z;
+    s.position.y = mmDrag.oy + dy / mmTx.z;
+    const el = document.querySelector(`[data-mm-id="${s.id}"]`);
+    if (el) { el.style.left = s.position.x + 'px'; el.style.top = s.position.y + 'px'; }
+    // Highlight category if overlapping
+    const tgt = mmFindDropTarget(el);
+    document.querySelectorAll('.mm-drop-target').forEach(e => e.classList.remove('mm-drop-target'));
+    if (tgt) document.querySelector(`[data-mm-id="${tgt.id}"]`)?.classList.add('mm-drop-target');
+    mmRenderEdges();
+    return;
+  }
+  if (mmDrag.type === 'cat') {
+    const c = mmData.categories.find(c => c.id === mmDrag.id);
+    if (!c) return;
+    c.position.x = mmDrag.ox + dx / mmTx.z;
+    c.position.y = mmDrag.oy + dy / mmTx.z;
+    const el = document.querySelector(`[data-mm-id="${c.id}"]`);
+    if (el) { el.style.left = c.position.x + 'px'; el.style.top = c.position.y + 'px'; }
+    mmRenderEdges();
+  }
+}
+
+function mmOnMouseUp() {
+  document.body.style.cursor = '';
+  if (!mmDrag) return;
+  const { type, id, moved } = mmDrag;
+  mmDrag = null;
+
+  document.querySelectorAll('.mm-drop-target').forEach(e => e.classList.remove('mm-drop-target'));
+
+  if (type === 'stock' && moved) {
+    const s = mmData.stocks.find(s => s.id === id);
+    if (s && !s.categoryId) {
+      const stockEl = document.querySelector(`[data-mm-id="${id}"]`);
+      const tgt = mmFindDropTarget(stockEl);
+      if (tgt) {
+        // Drop into category
+        s.categoryId = tgt.id;
+        mmSave(); mmRender();
+        return;
+      }
+    }
+    mmSave();
+    const block = e => { e.stopPropagation(); document.removeEventListener('click', block, true); };
+    document.addEventListener('click', block, true);
+    return;
+  }
+  if (type !== 'pan' && moved) {
+    mmSave();
+    const block = e => { e.stopPropagation(); document.removeEventListener('click', block, true); };
+    document.addEventListener('click', block, true);
+  }
+}
+
+// Return a category that the given element's center is hovering over
+function mmFindDropTarget(el) {
+  if (!el) return null;
+  const er = el.getBoundingClientRect();
+  const cx = er.left + er.width / 2;
+  const cy = er.top  + er.height / 2;
+  for (const cat of mmData.categories) {
+    const catEl = document.querySelector(`[data-mm-id="${cat.id}"]`);
+    if (!catEl) continue;
+    const cr = catEl.getBoundingClientRect();
+    if (cx > cr.left && cx < cr.right && cy > cr.top && cy < cr.bottom) return cat;
+  }
+  return null;
+}
+
+// ── Node center (canvas-space coords) ────────────────────────
+
+function mmGetCenter(id) {
+  const canvas = document.getElementById('mmCanvas');
+  if (!canvas) return null;
+  const el = canvas.querySelector(`[data-mm-id="${id}"]`);
+  if (!el) return null;
+  const cr = canvas.getBoundingClientRect();
+  const er = el.getBoundingClientRect();
+  return {
+    x: (er.left + er.width  / 2 - cr.left) / mmTx.z,
+    y: (er.top  + er.height / 2 - cr.top)  / mmTx.z,
+  };
+}
+
+// ── Render ───────────────────────────────────────────────────
+
+function mmRender() {
+  const canvas = document.getElementById('mmCanvas');
+  if (!canvas) return;
+  canvas.querySelectorAll('.mm-node, .mm-cat-node').forEach(el => el.remove());
+  mmData.categories.forEach(cat  => canvas.appendChild(mmMakeCatEl(cat)));
+  mmData.stocks.filter(s => !s.categoryId).forEach(s => canvas.appendChild(mmMakeStockEl(s)));
+  mmRenderEdges();
+}
+
+function mmRenderEdges() {
+  clearTimeout(mmEdgeLPTimer); mmEdgeLPTimer = null;
+  const svg = document.getElementById('mmEdgeSvg');
+  if (!svg) return;
+  svg.innerHTML = `<defs>
+    <marker id="mm-arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#4f7eff" opacity="0.8"/>
+    </marker>
+  </defs>`;
+
+  mmData.edges.forEach(edge => {
+    const src = mmGetCenter(edge.sourceId);
+    const tgt = mmGetCenter(edge.targetId);
+    if (!src || !tgt) return;
+
+    const dx = tgt.x - src.x;
+    const d  = `M${src.x},${src.y} C${src.x + dx * 0.5},${src.y} ${tgt.x - dx * 0.5},${tgt.y} ${tgt.x},${tgt.y}`;
+
+    // Wide invisible hit area — click=edit label, long press=delete
+    const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    hit.setAttribute('d', d);
+    hit.setAttribute('stroke', 'transparent');
+    hit.setAttribute('stroke-width', '18');
+    hit.setAttribute('fill', 'none');
+    hit.style.cursor = 'pointer';
+    hit.style.pointerEvents = 'stroke';
+
+    // Mouse long-press
+    hit.addEventListener('mousedown', e => {
+      e.stopPropagation();
+      mmEdgeLPFired = false;
+      mmEdgeLPTimer = setTimeout(() => {
+        mmEdgeLPFired = true; mmEdgeLPTimer = null;
+        mmDeleteEdgeConfirm(edge.id);
+      }, 600);
+    });
+    hit.addEventListener('mouseup',   () => { clearTimeout(mmEdgeLPTimer); mmEdgeLPTimer = null; });
+    hit.addEventListener('mousemove', () => { clearTimeout(mmEdgeLPTimer); mmEdgeLPTimer = null; });
+    hit.addEventListener('click', e => {
+      e.stopPropagation();
+      if (mmEdgeLPFired) { mmEdgeLPFired = false; return; }
+      if (mmMode === 'delete') { mmDeleteEdgeConfirm(edge.id); return; }
+      mmEditEdgeLabel(edge.id);
+    });
+
+    // Touch long-press
+    hit.addEventListener('touchstart', e => {
+      e.stopPropagation();
+      mmEdgeLPFired = false;
+      mmEdgeLPTimer = setTimeout(() => {
+        mmEdgeLPFired = true; mmEdgeLPTimer = null;
+        mmDeleteEdgeConfirm(edge.id);
+      }, 600);
+    }, { passive: true });
+    hit.addEventListener('touchmove', () => {
+      clearTimeout(mmEdgeLPTimer); mmEdgeLPTimer = null;
+    }, { passive: true });
+    hit.addEventListener('touchend', () => {
+      if (mmEdgeLPTimer) {
+        clearTimeout(mmEdgeLPTimer); mmEdgeLPTimer = null;
+        if (!mmEdgeLPFired) mmEditEdgeLabel(edge.id); // short tap → edit
+      }
+    }, { passive: true });
+
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('stroke', '#4f7eff');
+    path.setAttribute('stroke-width', '2');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('opacity', '0.7');
+    path.setAttribute('marker-end', 'url(#mm-arr)');
+
+    svg.appendChild(hit);
+    svg.appendChild(path);
+
+    // Label with background pill
+    if (edge.label) {
+      const mx = (src.x + tgt.x) / 2;
+      const my = (src.y + tgt.y) / 2 - 10;
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', mx);
+      text.setAttribute('y', my);
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('dominant-baseline', 'middle');
+      text.setAttribute('font-size', '11');
+      text.setAttribute('fill', '#c0c4d8');
+      text.textContent = edge.label;
+      // measure text width after inserting temporarily
+      svg.appendChild(g);
+      g.appendChild(text);
+      const tw = text.getBBox?.()?.width || edge.label.length * 7;
+      g.removeChild(text);
+      svg.removeChild(g);
+
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', mx - tw / 2 - 6);
+      rect.setAttribute('y', my - 9);
+      rect.setAttribute('width', tw + 12);
+      rect.setAttribute('height', 18);
+      rect.setAttribute('rx', '9');
+      rect.setAttribute('fill', '#161923');
+      rect.setAttribute('stroke', '#4f7eff');
+      rect.setAttribute('stroke-width', '1');
+      rect.setAttribute('opacity', '0.9');
+
+      const labelG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      labelG.appendChild(rect);
+      labelG.appendChild(text);
+      svg.appendChild(labelG);
+    }
+  });
+}
+
+// ── Edge label edit & delete ──────────────────────────────────
+
+function mmEditEdgeLabel(edgeId) {
+  const edge = mmData.edges.find(e => e.id === edgeId);
+  if (!edge) return;
+  const val = prompt('연결선 이름 수정 (빈칸=이름 없음):', edge.label || '');
+  if (val === null) return;
+  edge.label = val.trim();
+  mmSave(); mmRenderEdges();
+}
+
+function mmDeleteEdgeConfirm(edgeId) {
+  const edge = mmData.edges.find(e => e.id === edgeId);
+  if (!edge) return;
+  const msg = edge.label ? `"${edge.label}" 연결선을 삭제하시겠습니까?` : '이 연결선을 삭제하시겠습니까?';
+  if (!confirm(msg)) return;
+  mmData.edges = mmData.edges.filter(e => e.id !== edgeId);
+  mmSave(); mmRenderEdges();
+}
+
+// ── Returns formatter ─────────────────────────────────────────
+
+function mmFmtRet(v) {
+  if (v == null) return `<span class="mm-ret-val">—</span>`;
+  const cls = v > 0 ? 'up' : v < 0 ? 'down' : '';
+  return `<span class="mm-ret-val ${cls}">${v >= 0 ? '+' : ''}${v.toFixed(1)}%</span>`;
+}
+
+// ── Element builders ─────────────────────────────────────────
+
+function mmMakeStockEl(stock) {
+  const r = stock.returns || {};
+  const div = document.createElement('div');
+  div.className = 'mm-node';
+  div.dataset.mmId = stock.id;
+  div.style.left = stock.position.x + 'px';
+  div.style.top  = stock.position.y + 'px';
+
+  div.innerHTML = `
+    <span class="mm-drag-handle">⠿</span>
+    <div class="mm-node-btns">
+      <button class="mm-move-cat-btn" title="분류로 이동">📂</button>
+      <button class="mm-del-btn" data-del-id="${stock.id}" data-del-type="stock" title="삭제">×</button>
+    </div>
+    <div class="mm-node-main" data-click-id="${stock.id}" data-click-ticker="${stock.ticker}" data-click-name="${stock.name.replace(/"/g,'&quot;')}">
+      <div class="mm-node-head">
+        <span class="mm-ticker">${stock.name}</span>
+        <span class="mm-sname">${stock.ticker}</span>
+      </div>
+      <div class="mm-tags mm-tags-editable" title="클릭하여 태그 수정">
+        ${stock.tags?.length ? stock.tags.map(t=>`<span class="mm-tag">${t}</span>`).join('') : '<span class="mm-tags-hint">+ 태그 추가</span>'}
+      </div>
+      <div class="mm-returns">
+        <div class="mm-ret-row"><span class="mm-ret-lbl">1D</span>${mmFmtRet(r['1d'])}</div>
+        <div class="mm-ret-row"><span class="mm-ret-lbl">7D</span>${mmFmtRet(r['7d'])}</div>
+        <div class="mm-ret-row"><span class="mm-ret-lbl">1M</span>${mmFmtRet(r['1m'])}</div>
+        <div class="mm-ret-row"><span class="mm-ret-lbl">6M</span>${mmFmtRet(r['6m'])}</div>
+        <div class="mm-ret-row"><span class="mm-ret-lbl">1Y</span>${mmFmtRet(r['1y'])}</div>
+      </div>
+    </div>`;
+
+  // Tag editing
+  div.querySelector('.mm-tags-editable').addEventListener('click', e => {
+    e.stopPropagation();
+    const cur = stock.tags?.join(', ') || '';
+    const val = prompt('태그 수정 (쉼표로 구분):', cur);
+    if (val === null) return;
+    stock.tags = val.split(',').map(t => t.trim()).filter(Boolean);
+    mmSave();
+    const canvas = document.getElementById('mmCanvas');
+    canvas?.querySelector(`[data-mm-id="${stock.id}"]`)?.replaceWith(mmMakeStockEl(stock));
+    mmRenderEdges();
+  });
+
+  // Move to category button
+  div.querySelector('.mm-move-cat-btn').addEventListener('click', async e => {
+    e.stopPropagation();
+    if (!mmData.categories.length) { alert('먼저 분류를 추가해주세요.'); return; }
+    const opts = mmData.categories.map(c => c.name);
+    const choice = await mmSelectDialog(`${stock.ticker}을(를) 이동할 분류 선택`, opts);
+    if (choice === null) return;
+    stock.categoryId = mmData.categories[choice].id;
+    mmSave(); mmRender();
+  });
+
+  mmBindHandlers(div);
+  return div;
+}
+
+function mmMakeCatEl(cat) {
+  const catStocks = mmData.stocks.filter(s => s.categoryId === cat.id);
+  const div = document.createElement('div');
+  div.className = 'mm-cat-node';
+  div.dataset.mmId = cat.id;
+  div.style.left = cat.position.x + 'px';
+  div.style.top  = cat.position.y + 'px';
+
+  div.innerHTML = `
+    <div class="mm-cat-header">
+      <span class="mm-drag-handle mm-cat-handle">⠿</span>
+      <span class="mm-cat-name" data-click-id="${cat.id}" data-click-type="cat">${cat.name}</span>
+      <button class="mm-cat-del-btn mm-del-btn" data-del-id="${cat.id}" data-del-type="cat" title="분류 삭제">×</button>
+    </div>
+    <div class="mm-cat-body" id="mm-cb-${cat.id}">
+      ${catStocks.length === 0 ? '<div class="mm-cat-empty">종목 없음 — 검색 후 이 분류 선택</div>' : ''}
+    </div>`;
+
+  // Inline category name editing
+  const nameEl = div.querySelector('.mm-cat-name');
+  nameEl.addEventListener('click', e => {
+    e.stopPropagation();
+    if (mmMode === 'connect') { mmOnNodeClick(cat.id, 'cat', '', ''); return; }
+    const input = document.createElement('input');
+    input.className = 'mm-cat-name-input';
+    input.value = cat.name;
+    nameEl.replaceWith(input);
+    input.focus(); input.select();
+    const commit = () => {
+      const v = input.value.trim();
+      if (v) cat.name = v;
+      mmSave();
+      const canvas = document.getElementById('mmCanvas');
+      canvas?.querySelector(`[data-mm-id="${cat.id}"]`)?.replaceWith(mmMakeCatEl(cat));
+      mmRenderEdges();
+    };
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', ke => {
+      if (ke.key === 'Enter')  { ke.preventDefault(); input.blur(); }
+      if (ke.key === 'Escape') {
+        input.replaceWith(nameEl);
+        nameEl.textContent = cat.name;
+      }
+    });
+  });
+
+  const body = div.querySelector('.mm-cat-body');
+  catStocks.forEach(s => {
+    const r = s.returns || {};
+    const sEl = document.createElement('div');
+    sEl.className = 'mm-cat-stock';
+    sEl.dataset.mmId = s.id;
+    sEl.innerHTML = `
+      <div class="mm-cs-info" data-click-id="${s.id}" data-click-ticker="${s.ticker}" data-click-name="${s.name.replace(/"/g,'&quot;')}">
+        <span class="mm-cs-ticker">${s.ticker}</span>
+        <span class="mm-cs-name">${s.name}</span>
+      </div>
+      <div class="mm-cs-tags mm-tags-editable" title="클릭하여 태그 수정">
+        ${s.tags?.length ? s.tags.map(t=>`<span class="mm-tag mm-tag-sm">${t}</span>`).join('') : '<span class="mm-tags-hint">+태그</span>'}
+      </div>
+      <div class="mm-cs-rets">
+        <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">1D</span>${mmFmtRet(r['1d'])}</span>
+        <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">7D</span>${mmFmtRet(r['7d'])}</span>
+        <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">1M</span>${mmFmtRet(r['1m'])}</span>
+        <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">6M</span>${mmFmtRet(r['6m'])}</span>
+        <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">1Y</span>${mmFmtRet(r['1y'])}</span>
+      </div>
+      <div class="mm-cs-actions">
+        <button class="mm-cs-move-btn" title="분류 변경">↔</button>
+        <button class="mm-cs-del-btn mm-del-btn" data-del-id="${s.id}" data-del-type="stock" title="제거">×</button>
+      </div>`;
+
+    // Move to different category / standalone
+    sEl.querySelector('.mm-cs-move-btn').addEventListener('click', async e => {
+      e.stopPropagation();
+      const opts = ['(단독 배치)', ...mmData.categories.filter(c => c.id !== cat.id).map(c => c.name)];
+      const choice = await mmSelectDialog(`${s.ticker} 이동`, opts);
+      if (choice === null) return;
+      if (choice === 0) {
+        s.categoryId = null;
+        const vp = document.getElementById('mmViewport');
+        s.position = {
+          x: cat.position.x + 250 + (Math.random() - 0.5) * 80,
+          y: cat.position.y + (Math.random() - 0.5) * 80,
+        };
+      } else {
+        s.categoryId = mmData.categories.filter(c => c.id !== cat.id)[choice - 1].id;
+      }
+      mmSave(); mmRender();
+    });
+
+    // Tag editing for stock inside category
+    sEl.querySelector('.mm-cs-tags').addEventListener('click', e => {
+      e.stopPropagation();
+      const cur = s.tags?.join(', ') || '';
+      const val = prompt('태그 수정 (쉼표로 구분):', cur);
+      if (val === null) return;
+      s.tags = val.split(',').map(t => t.trim()).filter(Boolean);
+      mmSave();
+      const canvas = document.getElementById('mmCanvas');
+      canvas?.querySelector(`[data-mm-id="${cat.id}"]`)?.replaceWith(mmMakeCatEl(cat));
+      mmRenderEdges();
+    });
+
+    body.appendChild(sEl);
+  });
+
+  mmBindHandlers(div);
+  return div;
+}
+
+function mmBindHandlers(el) {
+  el.querySelectorAll('[data-click-id]').forEach(t => {
+    t.addEventListener('click', e => {
+      e.stopPropagation();
+      mmOnNodeClick(t.dataset.clickId, t.dataset.clickType || 'stock', t.dataset.clickTicker, t.dataset.clickName);
+    });
+  });
+
+  el.querySelectorAll('[data-del-id]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const id   = btn.dataset.delId;
+      const type = btn.dataset.delType;
+      if (type === 'cat') {
+        const cat = mmData.categories.find(c => c.id === id);
+        if (!cat) return;
+        if (!confirm(`"${cat.name}" 분류를 삭제할까요?\n(포함 종목은 단독 배치로 이동됩니다)`)) return;
+        mmData.stocks.filter(s => s.categoryId === id).forEach(s => {
+          s.categoryId = null;
+          s.position = { x: cat.position.x + (Math.random() - 0.5) * 160, y: cat.position.y + 200 };
+        });
+        mmData.categories = mmData.categories.filter(c => c.id !== id);
+        mmData.edges = mmData.edges.filter(e => e.sourceId !== id && e.targetId !== id);
+      } else {
+        const s = mmData.stocks.find(s => s.id === id);
+        if (!s) return;
+        if (!confirm(`${s.ticker} 종목을 삭제할까요?`)) return;
+        mmData.stocks = mmData.stocks.filter(s => s.id !== id);
+        mmData.edges  = mmData.edges.filter(e => e.sourceId !== id && e.targetId !== id);
+      }
+      mmSave(); mmRender();
+    });
+  });
+}
+
+// ── Long-press → start connect from a node ───────────────────
+
+function mmStartConnectFrom(id) {
+  mmMode = 'connect';
+  mmConnSrc = id;
+  document.getElementById('mmConnectBtn').classList.add('active');
+  document.getElementById('mmDeleteBtn').classList.remove('active');
+  document.querySelectorAll('[data-mm-id]').forEach(el => el.classList.remove('mm-conn-src'));
+  document.querySelector(`[data-mm-id="${id}"]`)?.classList.add('mm-conn-src');
+  // Short visual feedback
+  const el = document.querySelector(`[data-mm-id="${id}"]`);
+  if (el) {
+    el.style.transition = 'box-shadow 0.2s';
+    el.style.boxShadow = '0 0 0 4px rgba(79,126,255,0.5)';
+    setTimeout(() => { el.style.boxShadow = ''; }, 600);
+  }
+}
+
+// ── Node click: connect mode or open chart ────────────────────
+
+function mmOnNodeClick(id, type, ticker, name) {
+  if (mmMode === 'connect') {
+    if (!mmConnSrc) {
+      mmConnSrc = id;
+      document.querySelectorAll('[data-mm-id]').forEach(el => el.classList.remove('mm-conn-src'));
+      document.querySelector(`[data-mm-id="${id}"]`)?.classList.add('mm-conn-src');
+    } else if (mmConnSrc !== id) {
+      const already = mmData.edges.some(e =>
+        (e.sourceId === mmConnSrc && e.targetId === id) ||
+        (e.sourceId === id && e.targetId === mmConnSrc)
+      );
+      if (!already) {
+        const label = (prompt('연결 레이블 입력 (선택 사항 — 빈칸 OK):') ?? '').trim();
+        mmData.edges.push({ id: mmGenId('edge'), sourceId: mmConnSrc, targetId: id, label });
+        mmSave();
+      }
+      document.querySelectorAll('[data-mm-id]').forEach(el => el.classList.remove('mm-conn-src'));
+      mmConnSrc = null;
+      mmRenderEdges();
+    }
+    return;
+  }
+  if (type === 'stock' && ticker) openChart(ticker);
+}
+
+// ── Add stock dialog ──────────────────────────────────────────
+
+async function mmAddStock(symbol, name) {
+  if (mmData.stocks.some(s => s.ticker === symbol)) {
+    alert(`${symbol}은(는) 이미 마인드맵에 있습니다.`);
+    return;
+  }
+
+  const cats = mmData.categories;
+  let catId = null;
+  if (cats.length > 0) {
+    const opts = ['(단독 배치)', ...cats.map(c => c.name)];
+    const choice = await mmSelectDialog('종목을 어디에 추가할까요?', opts);
+    if (choice === null) return;
+    if (choice > 0) catId = cats[choice - 1].id;
+  }
+
+  const tagsRaw = (prompt(`${symbol} 태그 입력 (쉼표 구분, 예: AI반도체,GPU)\n비워두면 태그 없음:`) ?? '').trim();
+  const tags    = tagsRaw ? tagsRaw.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+  const vp = document.getElementById('mmViewport');
+  const cx = (vp.clientWidth  / 2 - mmTx.x) / mmTx.z;
+  const cy = (vp.clientHeight / 2 - mmTx.y) / mmTx.z;
+
+  const stock = {
+    id: mmGenId('stock'),
+    name,
+    ticker: symbol,
+    tags,
+    categoryId: catId,
+    position: catId ? { x: 0, y: 0 } : { x: cx - 87 + (Math.random() - 0.5) * 120, y: cy - 80 + (Math.random() - 0.5) * 120 },
+    returns: null
+  };
+
+  mmData.stocks.push(stock);
+  mmSave();
+  mmRender();
+  mmFetchReturns(stock.id, symbol);
+}
+
+async function mmFetchReturns(stockId, symbol) {
+  try {
+    const [perfResult, priceResult] = await Promise.allSettled([
+      fetchPerformance(symbol),
+      fetchPrice(symbol),
+    ]);
+    const s = mmData.stocks.find(s => s.id === stockId);
+    if (!s) return;
+    const perf  = perfResult.status  === 'fulfilled' ? perfResult.value  : {};
+    const price = priceResult.status === 'fulfilled' ? priceResult.value : {};
+    s.returns = {
+      '1d': price.change_pct ?? null,   // /api/price 의 change_pct 사용
+      '7d': perf['5d']   ?? null,
+      '1m': perf['1mo']  ?? null,
+      '6m': perf['6mo']  ?? null,
+      '1y': perf['1y']   ?? null,
+    };
+    mmSave();
+    // Re-render the affected element
+    const canvas = document.getElementById('mmCanvas');
+    if (!canvas) return;
+    const old = canvas.querySelector(`[data-mm-id="${stockId}"]`);
+    if (!old) return;
+    if (s.categoryId) {
+      const catEl = canvas.querySelector(`[data-mm-id="${s.categoryId}"]`);
+      const cat   = mmData.categories.find(c => c.id === s.categoryId);
+      if (catEl && cat) catEl.replaceWith(mmMakeCatEl(cat));
+    } else {
+      old.replaceWith(mmMakeStockEl(s));
+    }
+    mmRenderEdges();
+  } catch { /* silently fail */ }
+}
+
+// ── Simple native-style select dialog ────────────────────────
+
+function mmSelectDialog(title, options) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'mm-dialog-overlay';
+    const box = document.createElement('div');
+    box.className = 'mm-dialog';
+    box.innerHTML = `<div class="mm-dialog-title">${title}</div>
+      <div class="mm-dialog-opts">${options.map((o, i) =>
+        `<button class="mm-dialog-opt" data-idx="${i}">${o}</button>`).join('')}
+      </div>
+      <button class="mm-dialog-cancel">취소</button>`;
+    box.querySelectorAll('.mm-dialog-opt').forEach(btn => {
+      btn.addEventListener('click', () => { overlay.remove(); resolve(+btn.dataset.idx); });
+    });
+    box.querySelector('.mm-dialog-cancel').addEventListener('click', () => { overlay.remove(); resolve(null); });
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  });
+}
+
+// ── Refresh 1D returns for all stocks (fixes null 1d on reload) ─
+
+function mmRefreshAllReturns() {
+  mmData.stocks.forEach(s => {
+    if (s.returns?.['1d'] == null) mmFetchReturns(s.id, s.ticker);
+  });
+}
+
+// ── Name migration: fix stocks where name was stored as ticker ─
+
+async function mmFixStockNames() {
+  const toFix = mmData.stocks.filter(s => !s.name || s.name === s.ticker);
+  if (!toFix.length) return;
+  let fixed = 0;
+  await Promise.allSettled(toFix.map(async s => {
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(s.ticker)}`).then(r => r.json());
+      const match = res.find(r => r.symbol === s.ticker);
+      if (match?.name && match.name !== s.ticker) {
+        s.name = match.name;
+        fixed++;
+      }
+    } catch {}
+  }));
+  if (fixed > 0) { mmSave(); mmRender(); }
+}
+
+// ── Search ───────────────────────────────────────────────────
+
+async function mmDoSearch(q) {
+  const sd = document.getElementById('mmSearchDropdown');
+  sd.innerHTML = '<div class="dd-msg">검색 중...</div>';
+  sd.classList.remove('hidden');
+
+  try {
+    const res   = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const items = await res.json();
+
+    if (!items.length) {
+      sd.innerHTML = '<div class="dd-msg">결과 없음</div>';
+      return;
+    }
+
+    sd.innerHTML = items.slice(0, 8).map(item => `
+      <div class="dd-item" data-symbol="${item.symbol}" data-name="${(item.name || '').replace(/"/g, '&quot;')}">
+        <span class="dd-symbol">${item.symbol}</span>
+        <span class="dd-name">${item.name || ''}</span>
+        <span class="dd-exch">${item.exchange || ''}</span>
+      </div>`).join('');
+
+    sd.querySelectorAll('.dd-item').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        document.getElementById('mmSearchInput').value = '';
+        sd.classList.add('hidden');
+        mmAddStock(el.dataset.symbol, el.dataset.name);
+      });
+    });
+  } catch {
+    sd.innerHTML = '<div class="dd-msg" style="color:#ff4655">검색 실패</div>';
+  }
+}
+
+// ── Touch support ────────────────────────────────────────────
+
+function mmInitTouch() {
+  const vp = document.getElementById('mmViewport');
+
+  vp.addEventListener('touchstart', e => {
+    // Two-finger pinch zoom
+    if (e.touches.length === 2) {
+      const t0 = e.touches[0], t1 = e.touches[1];
+      const vpR = vp.getBoundingClientRect();
+      mmTouchSt = {
+        type: 'pinch',
+        dist0: Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY),
+        zoom0: mmTx.z,
+        panX0: mmTx.x,
+        panY0: mmTx.y,
+        cx: (t0.clientX + t1.clientX) / 2 - vpR.left,
+        cy: (t0.clientY + t1.clientY) / 2 - vpR.top,
+      };
+      e.preventDefault();
+      return;
+    }
+
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    if (!el) return;
+
+    // Button inside a node → let native click fire, do NOT preventDefault
+    if (el.closest('button')) return;
+
+    // Whole node/category → drag, long-press connect, or tap
+    const nodeEl = el.closest('.mm-node, .mm-cat-node');
+    if (nodeEl) {
+      const mmId  = nodeEl.dataset.mmId;
+      const isCat = nodeEl.classList.contains('mm-cat-node');
+      if (isCat && el.closest('.mm-cs-info')) return;
+      const type = isCat ? 'cat' : 'stock';
+
+      // Already in connect mode → this touch selects target
+      if (mmMode === 'connect' && mmConnSrc && mmConnSrc !== mmId) {
+        e.preventDefault();
+        mmOnNodeClick(mmId, type, el.closest('[data-click-ticker]')?.dataset?.clickTicker || '', '');
+        return;
+      }
+
+      const node = isCat
+        ? mmData.categories.find(c => c.id === mmId)
+        : mmData.stocks.find(s => s.id === mmId);
+      if (!node || (type === 'stock' && node.categoryId)) return;
+      e.preventDefault();
+
+      // Long-press: 600ms → enter connect mode
+      mmLongPressTimer = setTimeout(() => {
+        mmLongPressTimer = null;
+        if (mmTouchSt?.moved) return;
+        mmTouchSt = null;
+        mmStartConnectFrom(mmId);
+      }, 600);
+
+      mmTouchSt = { type: 'node', dragType: type, id: mmId,
+        sx: touch.clientX, sy: touch.clientY,
+        ox: node.position.x, oy: node.position.y,
+        moved: false, tapEl: el };
+      return;
+    }
+
+    // Canvas background → pan (anything not on a node/cat)
+    e.preventDefault();
+    mmTouchSt = { type: 'pan', sx: touch.clientX, sy: touch.clientY,
+      ox: mmTx.x, oy: mmTx.y };
+  }, { passive: false });
+
+  vp.addEventListener('touchmove', e => {
+    if (!mmTouchSt) return;
+
+    // Pinch zoom + pan
+    if (mmTouchSt.type === 'pinch' && e.touches.length === 2) {
+      e.preventDefault();
+      const t0 = e.touches[0], t1 = e.touches[1];
+      const vpR = vp.getBoundingClientRect();
+      const dist   = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      const nz     = Math.min(4, Math.max(0.15, mmTouchSt.zoom0 * dist / mmTouchSt.dist0));
+      const curCx  = (t0.clientX + t1.clientX) / 2 - vpR.left;
+      const curCy  = (t0.clientY + t1.clientY) / 2 - vpR.top;
+      mmTx.x = mmTouchSt.cx - (nz / mmTouchSt.zoom0) * (mmTouchSt.cx - mmTouchSt.panX0) + (curCx - mmTouchSt.cx);
+      mmTx.y = mmTouchSt.cy - (nz / mmTouchSt.zoom0) * (mmTouchSt.cy - mmTouchSt.panY0) + (curCy - mmTouchSt.cy);
+      mmTx.z = nz;
+      mmApplyTransform();
+      return;
+    }
+
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - mmTouchSt.sx;
+    const dy = touch.clientY - mmTouchSt.sy;
+
+    if (mmTouchSt.type === 'pan') {
+      e.preventDefault();
+      mmTx.x = mmTouchSt.ox + dx;
+      mmTx.y = mmTouchSt.oy + dy;
+      mmApplyTransform();
+    } else if (mmTouchSt.type === 'node') {
+      if (!mmTouchSt.moved) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        mmTouchSt.moved = true;
+        clearTimeout(mmLongPressTimer); mmLongPressTimer = null;
+      }
+      e.preventDefault();
+      const id   = mmTouchSt.id;
+      const node = mmTouchSt.dragType === 'cat'
+        ? mmData.categories.find(c => c.id === id)
+        : mmData.stocks.find(s => s.id === id);
+      if (!node || (mmTouchSt.dragType === 'stock' && node.categoryId)) return;
+      node.position.x = mmTouchSt.ox + dx / mmTx.z;
+      node.position.y = mmTouchSt.oy + dy / mmTx.z;
+      const el = document.querySelector(`[data-mm-id="${id}"]`);
+      if (el) { el.style.left = node.position.x + 'px'; el.style.top = node.position.y + 'px'; }
+      // Highlight drop target
+      const tgt = mmFindDropTarget(el);
+      document.querySelectorAll('.mm-drop-target').forEach(e => e.classList.remove('mm-drop-target'));
+      if (tgt) document.querySelector(`[data-mm-id="${tgt.id}"]`)?.classList.add('mm-drop-target');
+      mmRenderEdges();
+    }
+  }, { passive: false });
+
+  vp.addEventListener('touchend', e => {
+    clearTimeout(mmLongPressTimer); mmLongPressTimer = null;
+    document.querySelectorAll('.mm-drop-target').forEach(e => e.classList.remove('mm-drop-target'));
+    if (!mmTouchSt) return;
+    const st = mmTouchSt;
+    mmTouchSt = null;
+    if (st.type === 'node' && st.moved) {
+      // Check if dropped onto a category
+      if (st.dragType === 'stock') {
+        const s = mmData.stocks.find(s => s.id === st.id);
+        if (s && !s.categoryId) {
+          const stockEl = document.querySelector(`[data-mm-id="${st.id}"]`);
+          const tgt = mmFindDropTarget(stockEl);
+          if (tgt) { s.categoryId = tgt.id; mmSave(); mmRender(); return; }
+        }
+      }
+      mmSave();
+    } else if (st.type === 'node' && !st.moved && st.tapEl) {
+      // Short tap — dispatch to whichever interactive element was touched
+      const tagsEl  = st.tapEl.closest('.mm-tags-editable');
+      const nameEl  = st.tapEl.closest('.mm-cat-name');
+      const clickEl = st.tapEl.closest('[data-click-id]');
+      if (tagsEl)       tagsEl.click();          // tag edit prompt
+      else if (nameEl)  nameEl.click();           // category name inline edit
+      else if (clickEl) mmOnNodeClick(clickEl.dataset.clickId, clickEl.dataset.clickType || 'stock', clickEl.dataset.clickTicker, clickEl.dataset.clickName);
+    }
+  }, { passive: true });
+
+  vp.addEventListener('touchcancel', () => {
+    clearTimeout(mmLongPressTimer); mmLongPressTimer = null;
+    mmTouchSt = null;
+  }, { passive: true });
+}
+
+// ── Init ──────────────────────────────────────────────────────
+
+async function initMindmap() {
+  await mmLoad();
+
+  document.getElementById('mindmapBtn').addEventListener('click', () => {
+    const showing = !document.getElementById('mindmapView').classList.contains('hidden');
+    hideAllViews();
+    if (!showing) {
+      document.querySelector('main').classList.add('hidden');
+      document.getElementById('mindmapView').classList.remove('hidden');
+      document.getElementById('mindmapBtn').classList.add('active');
+      requestAnimationFrame(() => { mmResetView(); mmRender(); mmFixStockNames(); mmRefreshAllReturns(); });
+    }
+  });
+
+  document.getElementById('mmBackBtn').addEventListener('click', hideAllViews);
+
+  document.getElementById('mmAddCatBtn').addEventListener('click', async () => {
+    const name = (prompt('분류 이름을 입력하세요:') ?? '').trim();
+    if (!name) return;
+    const vp = document.getElementById('mmViewport');
+    const cx = (vp.clientWidth  / 2 - mmTx.x) / mmTx.z;
+    const cy = (vp.clientHeight / 2 - mmTx.y) / mmTx.z;
+    mmData.categories.push({
+      id: mmGenId('cat'),
+      name,
+      position: { x: cx - 115 + (Math.random() - 0.5) * 120, y: cy - 40 + (Math.random() - 0.5) * 80 }
+    });
+    mmSave(); mmRender();
+  });
+
+  const connBtn = document.getElementById('mmConnectBtn');
+  connBtn.addEventListener('click', () => {
+    if (mmMode === 'connect') {
+      mmMode = 'normal'; mmConnSrc = null;
+      connBtn.classList.remove('active');
+      document.querySelectorAll('[data-mm-id]').forEach(el => el.classList.remove('mm-conn-src'));
+    } else {
+      mmMode = 'connect';
+      connBtn.classList.add('active');
+      document.getElementById('mmDeleteBtn').classList.remove('active');
+    }
+  });
+
+  const delBtn = document.getElementById('mmDeleteBtn');
+  delBtn.addEventListener('click', () => {
+    if (mmMode === 'delete') {
+      mmMode = 'normal'; delBtn.classList.remove('active');
+    } else {
+      mmMode = 'delete'; delBtn.classList.add('active');
+      connBtn.classList.remove('active'); mmConnSrc = null;
+    }
+  });
+
+  document.getElementById('mmZoomIn').addEventListener('click', () => {
+    const vp = document.getElementById('mmViewport');
+    mmZoomAt(1.2, vp.clientWidth / 2, vp.clientHeight / 2);
+  });
+  document.getElementById('mmZoomOut').addEventListener('click', () => {
+    const vp = document.getElementById('mmViewport');
+    mmZoomAt(0.8, vp.clientWidth / 2, vp.clientHeight / 2);
+  });
+  document.getElementById('mmZoomFit').addEventListener('click', mmResetView);
+
+  const vp = document.getElementById('mmViewport');
+  vp.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = vp.getBoundingClientRect();
+    mmZoomAt(e.deltaY < 0 ? 1.1 : 0.9, e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+
+  // Canvas-level mousedown — handles node drag, long-press connect, canvas pan
+  vp.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    if (e.target.closest('button')) return;
+
+    const nodeEl = e.target.closest('.mm-node');
+    const catEl  = e.target.closest('.mm-cat-node');
+    const anyNode = nodeEl || catEl;
+
+    if (anyNode) {
+      const id   = anyNode.dataset.mmId;
+      const isCat = !!catEl && !nodeEl;
+
+      if (isCat && e.target.closest('.mm-cs-info')) return;
+
+      // If already in connect mode → this click selects the target
+      if (mmMode === 'connect' && mmConnSrc && mmConnSrc !== id) {
+        e.preventDefault();
+        mmOnNodeClick(id, isCat ? 'cat' : 'stock', e.target.closest('[data-click-ticker]')?.dataset?.clickTicker || '', '');
+        return;
+      }
+
+      const node = isCat
+        ? mmData.categories.find(c => c.id === id)
+        : mmData.stocks.find(s => s.id === id);
+      if (!node) return;
+      if (!isCat && node.categoryId) return;
+
+      e.preventDefault();
+
+      // Long-press: 600ms → enter connect mode from this node
+      mmLongPressTimer = setTimeout(() => {
+        mmLongPressTimer = null;
+        if (mmDrag?.moved) return; // was a drag, not a long press
+        mmDrag = null;
+        mmStartConnectFrom(id);
+      }, 600);
+
+      mmDrag = { type: isCat ? 'cat' : 'stock', id, sx: e.clientX, sy: e.clientY, ox: node.position.x, oy: node.position.y, moved: false };
+      return;
+    }
+
+    // Canvas background → pan
+    e.preventDefault();
+    mmDrag = { type: 'pan', sx: e.clientX, sy: e.clientY, ox: mmTx.x, oy: mmTx.y };
+  });
+
+  // Cancel long press on mouseup/move
+  document.addEventListener('mouseup', () => { clearTimeout(mmLongPressTimer); mmLongPressTimer = null; });
+
+  document.addEventListener('mousemove', mmOnMouseMove);
+  document.addEventListener('mouseup',   mmOnMouseUp);
+  mmInitTouch();
+
+  // Search — same UX as main stock search
+  const si = document.getElementById('mmSearchInput');
+  const sd = document.getElementById('mmSearchDropdown');
+
+  si.addEventListener('input', () => {
+    clearTimeout(mmSearchTimer);
+    const q = si.value.trim();
+    if (!q) { sd.classList.add('hidden'); return; }
+    mmSearchTimer = setTimeout(() => mmDoSearch(q), 300);
+  });
+
+  si.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { sd.classList.add('hidden'); si.value = ''; }
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.mm-search-wrap')) sd.classList.add('hidden');
   });
 }

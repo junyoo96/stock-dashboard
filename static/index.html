@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=55" />
+  <link rel="stylesheet" href="style.css?v=57" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -17,9 +17,10 @@
       <div class="header-inner">
         <div class="header-left">
           <span class="logo">주식 대시보드</span>
-          <button id="graphViewBtn" class="graph-btn">그래프</button>
+          <button id="graphViewBtn" class="graph-btn">과거분석</button>
           <button id="stockChartsViewBtn" class="graph-btn">종목별 그래프</button>
           <button id="macroAnalysisBtn" class="graph-btn">거시경제 분석</button>
+          <button id="mindmapBtn" class="graph-btn">마인드맵</button>
         </div>
         <div class="search-wrap">
           <input id="searchInput" type="text" placeholder="종목 검색 (예: AAPL, 삼성전자, 005930.KS)..." autocomplete="off" />
@@ -191,6 +192,32 @@
     </div>
   </div>
 
+  <div id="mindmapView" class="mindmap-view hidden">
+    <div class="mm-toolbar">
+      <button id="mmBackBtn" class="gv-back">← 대시보드</button>
+      <div class="mm-toolbar-tools">
+        <button id="mmAddCatBtn" class="mm-tool-btn">＋ 분류</button>
+        <button id="mmConnectBtn" class="mm-tool-btn">🔗 연결</button>
+        <button id="mmDeleteBtn" class="mm-tool-btn">🗑 삭제</button>
+      </div>
+      <div class="mm-search-wrap">
+        <input id="mmSearchInput" type="text" placeholder="종목 검색 후 마인드맵에 추가..." autocomplete="off" />
+        <div id="mmSearchDropdown" class="dropdown hidden"></div>
+      </div>
+      <div class="mm-zoom-controls">
+        <button id="mmZoomOut" class="mm-zoom-btn">−</button>
+        <span id="mmZoomPct">100%</span>
+        <button id="mmZoomIn" class="mm-zoom-btn">＋</button>
+        <button id="mmZoomFit" class="mm-zoom-btn" title="보기 초기화">↺</button>
+      </div>
+    </div>
+    <div class="mm-viewport" id="mmViewport">
+      <div class="mm-canvas" id="mmCanvas">
+        <svg id="mmEdgeSvg" class="mm-edge-svg"></svg>
+      </div>
+    </div>
+  </div>
+
   <div id="overlay" class="overlay hidden"></div>
   <div id="modal" class="modal hidden">
     <div class="modal-head">
@@ -213,6 +240,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=56"></script>
+  <script src="app.js?v=72"></script>
 </body>
 </html>
