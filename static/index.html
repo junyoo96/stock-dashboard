@@ -165,18 +165,34 @@
     <div class="gv-toolbar">
       <button id="graphBackBtn" class="gv-back">← 대시보드</button>
       <div class="gv-periods">
-        <button class="gv-pbtn active" data-p="1d">1일</button>
+        <button class="gv-pbtn" data-p="1d">1일</button>
         <button class="gv-pbtn" data-p="5d">7일</button>
         <button class="gv-pbtn" data-p="1mo">1개월</button>
         <button class="gv-pbtn" data-p="3mo">3개월</button>
         <button class="gv-pbtn" data-p="6mo">6개월</button>
         <button class="gv-pbtn" data-p="1y">1년</button>
-        <button class="gv-pbtn" data-p="5y">5년</button>
+        <button class="gv-pbtn active" data-p="5y">5년</button>
+        <button class="gv-pbtn" data-p="10y">10년</button>
+        <button class="gv-pbtn" data-p="20y">20년</button>
+      </div>
+      <div class="gv-date-range">
+        <input type="date" id="gvDateStart" class="gv-date-input" title="시작일">
+        <span class="gv-date-sep">~</span>
+        <input type="date" id="gvDateEnd" class="gv-date-input" title="종료일">
+        <button id="gvDateApply" class="gv-date-apply">조회</button>
+      </div>
+      <div class="gv-height-btns">
+        <span class="gv-hb-label">높이</span>
+        <button class="gv-hbtn" data-h="260">소</button>
+        <button class="gv-hbtn active" data-h="480">중</button>
+        <button class="gv-hbtn" data-h="750">대</button>
       </div>
     </div>
     <div class="gv-body">
-      <div class="gv-chart-wrap">
-        <canvas id="graphViewCanvas"></canvas>
+      <div class="gv-chart-column">
+        <div class="gv-chart-wrap">
+          <canvas id="graphViewCanvas"></canvas>
+        </div>
       </div>
       <div id="graphViewLegend" class="gv-legend"></div>
     </div>

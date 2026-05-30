@@ -59,7 +59,7 @@ const STOCK_CHART_COLORS = [
 ];
 
 let graphViewChartInstance = null;
-let graphViewCurrentPeriod = '1d';
+let graphViewCurrentPeriod = '5y';
 let stockChartsInstances = {};
 let stockChartsCurrentPeriod = '1d';
 
@@ -79,17 +79,78 @@ function hideAllViews() {
   hiddenGraphStocks.clear();
 }
 
+async function initChartHeightBtns() {
+  const wrap = document.querySelector('.gv-chart-wrap');
+  if (!wrap) return;
+
+  // DB에서 저장된 높이 값 불러오기
+  try {
+    const res = await fetch('/api/db/settings/gvChartHeight');
+    if (res.ok) {
+      const d = await res.json();
+      if (d.value) {
+        const h = parseInt(d.value, 10);
+        wrap.style.height = h + 'px';
+        // 가장 가까운 버튼에 active 표시
+        let closest = null, minDiff = Infinity;
+        document.querySelectorAll('.gv-hbtn').forEach(btn => {
+          const diff = Math.abs(parseInt(btn.dataset.h, 10) - h);
+          if (diff < minDiff) { minDiff = diff; closest = btn; }
+        });
+        document.querySelectorAll('.gv-hbtn').forEach(b => b.classList.remove('active'));
+        if (closest) closest.classList.add('active');
+      }
+    }
+  } catch {}
+
+  document.querySelectorAll('.gv-hbtn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const h = parseInt(btn.dataset.h, 10);
+      wrap.style.height = h + 'px';
+      document.querySelectorAll('.gv-hbtn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      // transition 끝난 후 차트 리사이즈
+      setTimeout(() => { if (graphViewChartInstance) graphViewChartInstance.resize(); }, 260);
+      // DB 저장
+      fetch('/api/db/settings/gvChartHeight', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: String(h) }),
+      }).catch(() => {});
+    });
+  });
+}
+
 function initGraphView() {
   document.getElementById('graphViewBtn').addEventListener('click', toggleGraphView);
   document.getElementById('graphBackBtn').addEventListener('click', hideAllViews);
+  initChartHeightBtns();
   document.querySelectorAll('.gv-pbtn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.gv-pbtn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       graphViewCurrentPeriod = btn.dataset.p;
+      // 날짜 직접 입력 초기화
+      document.getElementById('gvDateStart').value = '';
+      document.getElementById('gvDateEnd').value   = '';
       loadGraphView(graphViewCurrentPeriod);
     });
   });
+
+  // 날짜 직접 설정
+  const applyBtn = document.getElementById('gvDateApply');
+  function onDateApply() {
+    const s = document.getElementById('gvDateStart').value;
+    const e = document.getElementById('gvDateEnd').value;
+    if (!s || !e) return;
+    if (s > e) { alert('시작일이 종료일보다 늦을 수 없습니다.'); return; }
+    document.querySelectorAll('.gv-pbtn').forEach(b => b.classList.remove('active'));
+    graphViewCurrentPeriod = 'custom';
+    loadGraphView('custom', s, e);
+  }
+  applyBtn.addEventListener('click', onDateApply);
+  // 종료일 입력 후 Enter 키로도 조회
+  document.getElementById('gvDateEnd').addEventListener('keydown', e => { if (e.key === 'Enter') onDateApply(); });
 
   document.getElementById('gvInvestAmount').addEventListener('input', e => {
     const raw = e.target.value.replace(/[^0-9]/g, '');
@@ -299,7 +360,7 @@ async function loadStockChartsView(period) {
   }));
 }
 
-async function loadGraphView(period) {
+async function loadGraphView(period, start = null, end = null) {
   const legend = document.getElementById('graphViewLegend');
   if (!stocks.length) {
     legend.innerHTML = '';
@@ -313,7 +374,10 @@ async function loadGraphView(period) {
 
   const results = await Promise.allSettled(
     stocks.map(async s => {
-      const res = await fetch(`/api/chart/${encodeURIComponent(s.symbol)}?period=${period}`);
+      let url = `/api/chart/${encodeURIComponent(s.symbol)}?period=${period}`;
+      if (start) url += `&start=${start}`;
+      if (end)   url += `&end=${end}`;
+      const res = await fetch(url);
       if (!res.ok) throw new Error();
       const d = await res.json();
       return { symbol: s.symbol, name: s.name, data: d };
@@ -547,12 +611,10 @@ function initSectorChartToggle() {
 let macroIndicators = [];
 
 function saveMacroIndicators() {
-  const json = JSON.stringify(macroIndicators);
-  localStorage.setItem('macroIndicators', json);
   fetch('/api/db/settings/macroIndicators', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: json }),
+    body: JSON.stringify({ value: JSON.stringify(macroIndicators) }),
   }).catch(() => {});
 }
 
@@ -562,15 +624,8 @@ async function loadMacroIndicatorsFromDB() {
     if (res.ok) {
       const data = await res.json();
       const parsed = JSON.parse(data.value);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        macroIndicators = parsed;
-        return;
-      }
+      if (Array.isArray(parsed) && parsed.length > 0) macroIndicators = parsed;
     }
-  } catch {}
-  try {
-    const local = localStorage.getItem('macroIndicators');
-    if (local) macroIndicators = JSON.parse(local);
   } catch {}
 }
 
@@ -584,10 +639,37 @@ function formatMacroValue(symbol, price) {
 }
 
 // ─── 터치 드래그 헬퍼 ─────────────────────────────────────────
-function addTouchDrag(container, itemSel, handleSel, onDrop) {
+function addTouchDrag(container, itemSel, handleSel, onDrop, { hScroll = false } = {}) {
   let dragEl = null, clone = null, offX = 0, offY = 0;
   let pendingEl = null, pendingX = 0, pendingY = 0, pendingOffX = 0, pendingOffY = 0;
+  let lpTimer = null, lpReady = false;
   const THRESHOLD = 10;
+  const LP_MS = 450;
+
+  function cancelLP() {
+    clearTimeout(lpTimer); lpTimer = null;
+    if (lpReady && pendingEl) {
+      pendingEl.classList.remove('td-lp-ready');
+      pendingEl.style.transform = '';
+    }
+    lpReady = false;
+  }
+
+  function startDragFrom(item, touch) {
+    dragEl = item; pendingEl = null;
+    item.classList.remove('td-lp-ready');
+    item.style.transform = '';
+    offX = touch.clientX - item.getBoundingClientRect().left;
+    offY = touch.clientY - item.getBoundingClientRect().top;
+    const rect = item.getBoundingClientRect();
+    clone = item.cloneNode(true);
+    clone.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;` +
+      `width:${rect.width}px;height:${rect.height}px;opacity:0.85;pointer-events:none;` +
+      `z-index:9999;transform:scale(1.05);box-shadow:0 8px 24px rgba(0,0,0,0.45);`;
+    document.body.appendChild(clone);
+    item.style.opacity = '0.3';
+    if (navigator.vibrate) navigator.vibrate(30);
+  }
 
   container.addEventListener('touchstart', e => {
     const touch = e.touches[0];
@@ -601,22 +683,42 @@ function addTouchDrag(container, itemSel, handleSel, onDrop) {
     pendingX = touch.clientX; pendingY = touch.clientY;
     pendingOffX = touch.clientX - rect.left;
     pendingOffY = touch.clientY - rect.top;
+
+    if (hScroll) {
+      lpTimer = setTimeout(() => {
+        if (!pendingEl) return;
+        lpReady = true;
+        pendingEl.classList.add('td-lp-ready');
+      }, LP_MS);
+    }
   }, { passive: true });
 
   container.addEventListener('touchmove', e => {
     const touch = e.touches[0];
     if (pendingEl && !dragEl) {
-      if (Math.abs(touch.clientX - pendingX) < THRESHOLD &&
-          Math.abs(touch.clientY - pendingY) < THRESHOLD) return;
-      dragEl = pendingEl; pendingEl = null;
-      offX = pendingOffX; offY = pendingOffY;
-      const rect = dragEl.getBoundingClientRect();
-      clone = dragEl.cloneNode(true);
-      clone.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;` +
-        `width:${rect.width}px;height:${rect.height}px;opacity:0.85;pointer-events:none;` +
-        `z-index:9999;transform:scale(1.03);box-shadow:0 8px 24px rgba(0,0,0,0.45);`;
-      document.body.appendChild(clone);
-      dragEl.style.opacity = '0.3';
+      const dx = Math.abs(touch.clientX - pendingX);
+      const dy = Math.abs(touch.clientY - pendingY);
+      if (dx < THRESHOLD && dy < THRESHOLD) return;
+
+      if (hScroll) {
+        if (!lpReady) {
+          // 롱프레스 전 움직임 → 스크롤 허용
+          cancelLP(); pendingEl = null; return;
+        }
+        // 롱프레스 완료 → 드래그 시작
+        cancelLP();
+        startDragFrom(pendingEl, touch);
+      } else {
+        dragEl = pendingEl; pendingEl = null;
+        offX = pendingOffX; offY = pendingOffY;
+        const rect = dragEl.getBoundingClientRect();
+        clone = dragEl.cloneNode(true);
+        clone.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;` +
+          `width:${rect.width}px;height:${rect.height}px;opacity:0.85;pointer-events:none;` +
+          `z-index:9999;transform:scale(1.03);box-shadow:0 8px 24px rgba(0,0,0,0.45);`;
+        document.body.appendChild(clone);
+        dragEl.style.opacity = '0.3';
+      }
     }
     if (!dragEl || !clone) return;
     clone.style.left = `${touch.clientX - offX}px`;
@@ -631,6 +733,7 @@ function addTouchDrag(container, itemSel, handleSel, onDrop) {
   }, { passive: false });
 
   const cleanup = e => {
+    cancelLP();
     pendingEl = null;
     if (!dragEl) return;
     const touch = (e.changedTouches || e.touches)[0];
@@ -686,7 +789,7 @@ function initMacroSection() {
     macroIndicators.splice(ti, 0, macroIndicators.splice(fi, 1)[0]);
     saveMacroIndicators();
     renderMacroChips();
-  });
+  }, { hScroll: true });
 }
 
 function getMacroCategories() {
@@ -1015,6 +1118,7 @@ const INDICES = [
   { sym: '^GSPC', label: 'S&P 500' },
   { sym: '^IXIC', label: '나스닥' },
   { sym: '^DJI',  label: '다우존스' },
+  { sym: '^RUT',  label: '러셀 2000' },
   { sym: '^SOX',  label: '필라델피아 반도체' },
 ];
 
@@ -1033,7 +1137,7 @@ const SECTOR_ETFS = [
 ];
 
 // stocks: [{symbol, name, currency}]
-let stocks = JSON.parse(localStorage.getItem('stocks') || '[]');
+let stocks = [];
 let chartInstance = null;
 let currentChartSymbol = null;
 let refreshTimer = null;
@@ -1121,14 +1225,6 @@ function formatIndex(val) {
 }
 
 function loadIndexOrder() {
-  try {
-    const saved = JSON.parse(localStorage.getItem('indexBarOrder') || '[]');
-    if (saved.length) {
-      const ordered = saved.map(sym => INDICES.find(i => i.sym === sym)).filter(Boolean);
-      const rest    = INDICES.filter(i => !saved.includes(i.sym));
-      return [...ordered, ...rest];
-    }
-  } catch {}
   return [...INDICES];
 }
 
@@ -1198,7 +1294,6 @@ function initIndexBar() {
     const ti = _indexOrder.findIndex(i => i.sym === tgtSym);
     _indexOrder.splice(ti, 0, _indexOrder.splice(si, 1)[0]);
     const orderJson = JSON.stringify(_indexOrder.map(i => i.sym));
-    localStorage.setItem('indexBarOrder', orderJson);
     fetch('/api/db/settings/indexBarOrder', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -1220,14 +1315,13 @@ function initIndexBar() {
     if (si === -1 || ti === -1) return;
     _indexOrder.splice(ti, 0, _indexOrder.splice(si, 1)[0]);
     const orderJson = JSON.stringify(_indexOrder.map(i => i.sym));
-    localStorage.setItem('indexBarOrder', orderJson);
     fetch('/api/db/settings/indexBarOrder', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value: orderJson }),
     }).catch(() => {});
     renderIndexChips();
     fetchIndexBar();
-  });
+  }, { hScroll: true });
 }
 
 async function fetchIndexBar() {
@@ -1932,9 +2026,7 @@ function initMacroAnalysisView() {
       const res = await fetch('/api/db/settings/mavSectionOrder');
       if (res.ok) saved = JSON.parse((await res.json()).value);
     } catch {}
-    if (!saved.length) {
-      try { saved = JSON.parse(localStorage.getItem('mavSectionOrder') || '[]'); } catch {}
-    }
+    // (localStorage 폴백 제거 — DB만 사용)
     saved.forEach(key => {
       const sec = view.querySelector(`.mav-section[data-section="${key}"]`);
       if (sec) view.appendChild(sec);
@@ -1979,7 +2071,6 @@ function initMacroAnalysisView() {
     else target.after(dragSrc);
     const order = [...view.querySelectorAll('.mav-section[data-section]')].map(s => s.dataset.section);
     const orderJson = JSON.stringify(order);
-    localStorage.setItem('mavSectionOrder', orderJson);
     fetch('/api/db/settings/mavSectionOrder', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -2003,7 +2094,6 @@ function initMacroAnalysisView() {
     else target.after(dragged);
     const order = [...view.querySelectorAll('.mav-section[data-section]')].map(s => s.dataset.section);
     const orderJson = JSON.stringify(order);
-    localStorage.setItem('mavSectionOrder', orderJson);
     fetch('/api/db/settings/mavSectionOrder', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value: orderJson }),
@@ -3142,36 +3232,21 @@ function mmGenId(prefix) {
 // ── Storage ──────────────────────────────────────────────────
 
 function mmSave() {
-  const json = JSON.stringify(mmData);
-  try { localStorage.setItem('mmData_v1', json); } catch {}
   fetch('/api/db/settings/mindmapData', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: json }),
+    body: JSON.stringify({ value: JSON.stringify(mmData) }),
   }).catch(() => {});
 }
 
 async function mmLoad() {
-  let fromDB = false;
   try {
     const res = await fetch('/api/db/settings/mindmapData');
     if (res.ok) {
       const d = await res.json();
-      if (d.value) { mmData = JSON.parse(d.value); fromDB = true; }
+      if (d.value) mmData = JSON.parse(d.value);
     }
   } catch {}
-
-  // DB에 없으면 localStorage 폴백 (구버전 데이터 마이그레이션)
-  if (!fromDB) {
-    try {
-      const s = localStorage.getItem('mmData_v1');
-      if (s) {
-        mmData = JSON.parse(s);
-        // localStorage 데이터를 DB에 올려서 다음부터 동기화
-        mmSave();
-      }
-    } catch {}
-  }
 
   if (!mmData.categories) mmData.categories = [];
   if (!mmData.stocks)     mmData.stocks     = [];
@@ -3816,12 +3891,10 @@ function mmSelectDialog(title, options) {
   });
 }
 
-// ── Refresh 1D returns for all stocks (fixes null 1d on reload) ─
+// ── 마인드맵 열릴 때마다 모든 종목 수익률 새로 갱신 ─────────────
 
 function mmRefreshAllReturns() {
-  mmData.stocks.forEach(s => {
-    if (s.returns?.['1d'] == null) mmFetchReturns(s.id, s.ticker);
-  });
+  mmData.stocks.forEach(s => mmFetchReturns(s.id, s.ticker));
 }
 
 // ── Name migration: fix stocks where name was stored as ticker ─

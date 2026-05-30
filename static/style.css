@@ -67,6 +67,15 @@ header {
 .index-chip.ic-dragging  { opacity: 0.35; }
 .index-chip.ic-drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
 
+/* 롱프레스 준비 상태 — 진동 후 드래그 가능 시각 피드백 */
+.td-lp-ready {
+  transform: scale(1.08) !important;
+  transition: transform 0.15s ease !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  z-index: 10;
+  position: relative;
+}
+
 .idx-name  { font-weight: 700; color: var(--accent); font-size: 0.78rem; }
 .idx-vals  { display: flex; flex-direction: column; gap: 1px; align-items: flex-end; }
 .idx-price { color: var(--text); font-size: 0.75rem; }
@@ -1252,11 +1261,98 @@ main {
   align-items: flex-start;
 }
 
-.gv-chart-wrap {
+.gv-chart-column {
   flex: 1;
-  position: relative;
-  height: 520px;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.gv-chart-wrap {
+  position: relative;
+  height: 480px;
+  min-width: 0;
+  transition: height 0.25s ease;
+}
+
+.gv-height-btns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.gv-hb-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
+.gv-hbtn {
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.gv-hbtn:hover { color: var(--text); border-color: var(--text); }
+.gv-hbtn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.gv-date-range {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.gv-date-input {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 0.78rem;
+  padding: 3px 7px;
+  cursor: pointer;
+  width: 122px;
+  transition: border-color 0.15s;
+  color-scheme: dark;
+}
+.gv-date-input:focus { outline: none; border-color: var(--accent); }
+
+.gv-date-sep {
+  color: var(--muted);
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.gv-date-apply {
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  color: var(--accent);
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.gv-date-apply:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.gv-date-apply:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .gv-legend {
@@ -2464,6 +2560,14 @@ main {
   .index-row::-webkit-scrollbar { display: none; }
   .index-chip { flex: 0 0 auto; min-width: 110px; }
 
+  /* ── Sector chips: 768px — label 숨김, 폰트 축소 ── */
+  .sc-label  { display: none; }
+  .sector-chip { padding: 2px 5px; gap: 4px; }
+  .sector-row  { gap: 3px; }
+  .sc-symbol { font-size: 0.7rem; }
+  .sc-price  { font-size: 0.65rem; }
+  .sc-change { font-size: 0.62rem; }
+
   /* ── Macro header ── */
   .macro-header { flex-wrap: wrap; gap: 6px; }
   .macro-search-wrap { max-width: 100%; min-width: 120px; }
@@ -2522,6 +2626,42 @@ main {
 
   /* ── Sector chart section margin ── */
   .sector-chart-section { margin-bottom: 14px; }
+
+  /* ── Graph view (과거분석) ── */
+  .graph-view { padding: 14px 12px; }
+
+  .gv-toolbar { flex-wrap: wrap; gap: 8px; }
+  .gv-periods { flex-wrap: wrap; gap: 3px; }
+  .gv-pbtn    { padding: 4px 8px; font-size: 0.78rem; }
+  .gv-height-btns { margin-left: 0; }
+  .gv-hbtn    { padding: 4px 10px; font-size: 0.78rem; }
+  .gv-date-range { flex-wrap: wrap; }
+  .gv-date-input { width: 110px; font-size: 0.75rem; }
+
+  .gv-body {
+    flex-direction: column;
+  }
+
+  .gv-chart-column { width: 100%; }
+  .gv-chart-wrap   { height: 300px; }
+
+  .gv-legend {
+    width: 100%;
+    max-height: none;
+    overflow-y: visible;
+    padding-right: 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+
+  /* 전체표시/숨기기 버튼 행은 전체 너비 차지 */
+  .gv-legend-ctrl { flex: 0 0 100%; margin-bottom: 4px; }
+
+  .gv-legend-item { flex: 0 0 calc(50% - 6px); min-width: 0; }
+
+  .gv-invest-header { flex-wrap: wrap; gap: 10px; }
+  .gv-invest-input  { width: 100%; }
 }
 
 /* ============================================================
@@ -2540,6 +2680,14 @@ main {
   .index-chip { min-width: 95px; font-size: 0.72rem; padding: 3px 8px; }
   .idx-name   { font-size: 0.7rem; }
   .idx-price  { font-size: 0.68rem; }
+
+  /* ── Sector chips: 480px — price 숨김, 스크롤 방식으로 전환 ── */
+  .sc-price   { display: none; }
+  .sector-row { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .sector-row::-webkit-scrollbar { display: none; }
+  .sector-chip { flex: 0 0 auto; padding: 2px 6px; gap: 3px; }
+  .sc-symbol { font-size: 0.68rem; }
+  .sc-change { font-size: 0.62rem; }
 
   /* ── Macro ── */
   .mc-mgr-btn { padding: 3px 8px; font-size: 0.72rem; }
@@ -2570,4 +2718,12 @@ main {
   /* ── Modal ── */
   .modal-head { flex-wrap: wrap; gap: 6px; }
   .modal-btns { flex-wrap: wrap; gap: 4px; }
+
+  /* ── Graph view (과거분석) 480px ── */
+  .gv-chart-wrap { height: 230px; }
+  .gv-legend-item { flex: 0 0 calc(50% - 6px); }
+  .gv-ls { font-size: 0.75rem; }
+  .gv-lr { font-size: 0.75rem; }
+  .gv-ln { font-size: 0.67rem; }
+  .gv-invest-title { font-size: 0.82rem; }
 }

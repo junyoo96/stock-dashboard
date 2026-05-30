@@ -191,7 +191,9 @@ def _fetch_price(symbol: str) -> dict:
     ticker = yf.Ticker(symbol)
     fi = ticker.fast_info
     price = fi.last_price
-    prev = fi.previous_close
+    # regular_market_previous_close = 실제 정규장 전일 종가
+    # previous_close 는 after-hours 가격 등이 섞여 부정확한 경우가 있음
+    prev = fi.regular_market_previous_close or fi.previous_close
     if price is None or prev is None:
         raise ValueError(f"가격 데이터 없음: {symbol}")
     change = price - prev
@@ -221,12 +223,22 @@ async def get_price(symbol: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _fetch_chart(symbol: str, period: str) -> dict:
+def _fetch_chart(symbol: str, period: str, start: str = None, end: str = None) -> dict:
+    from datetime import datetime, timedelta
     ticker = yf.Ticker(symbol)
-    hist = ticker.history(period=period)
+    if start:
+        hist = ticker.history(start=start, end=end or None)
+        intraday = False
+    elif period == "20y":
+        s = (datetime.now() - timedelta(days=365 * 20)).strftime("%Y-%m-%d")
+        hist = ticker.history(start=s)
+        intraday = False
+    else:
+        hist = ticker.history(period=period)
+        intraday = period in ("1d", "5d")
     if hist.empty:
         raise ValueError(f"차트 데이터 없음: {symbol}")
-    fmt = "%Y-%m-%dT%H:%M:%S" if period in ("1d", "5d") else "%Y-%m-%d"
+    fmt = "%Y-%m-%dT%H:%M:%S" if intraday else "%Y-%m-%d"
     return {
         "dates": hist.index.strftime(fmt).tolist(),
         "open":  [round(float(p), 2) for p in hist["Open"]],
@@ -237,15 +249,16 @@ def _fetch_chart(symbol: str, period: str) -> dict:
 
 
 @app.get("/api/chart/{symbol}")
-async def get_chart(symbol: str, period: str = "1mo"):
+async def get_chart(symbol: str, period: str = "1mo", start: str = None, end: str = None):
     symbol = symbol.upper()
-    cached = cache_get(f"chart:{symbol}:{period}", 300)
+    cache_key = f"chart:{symbol}:{period}:{start}:{end}"
+    cached = cache_get(cache_key, 300)
     if cached is not None:
         return cached
     loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(executor, _fetch_chart, symbol, period)
-        cache_set(f"chart:{symbol}:{period}", result)
+        result = await loop.run_in_executor(executor, _fetch_chart, symbol, period, start, end)
+        cache_set(cache_key, result)
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -411,14 +424,21 @@ async def get_sector_chart(period: str = '1y'):
 
 
 def _fetch_performance(symbol: str) -> dict:
-    hist = yf.Ticker(symbol).history(period='2y', interval='1d')
+    ticker = yf.Ticker(symbol)
+    hist   = ticker.history(period='2y', interval='1d')
     if hist.empty:
         return {'symbol': symbol}
 
-    current   = float(hist['Close'].iloc[-1])
-    now_ts    = hist.index[-1]
-    offsets   = {'5d': 5, '1mo': 30, '3mo': 91, '6mo': 182, '1y': 365, '2y': 730}
-    result    = {'symbol': symbol}
+    # 실시간 가격 사용: 장중에도 오늘 수익률 반영
+    fi      = ticker.fast_info
+    current = fi.last_price or float(hist['Close'].iloc[-1])
+
+    # 오늘 날짜 기준으로 기간 계산 (hist 마지막 날짜 아님)
+    tz     = hist.index.tz
+    now_ts = datetime.datetime.now(tz=tz) if tz else datetime.datetime.now()
+
+    offsets = {'5d': 5, '1mo': 30, '3mo': 91, '6mo': 182, '1y': 365, '2y': 730}
+    result  = {'symbol': symbol}
 
     for key, days in offsets.items():
         target = now_ts - datetime.timedelta(days=days)
