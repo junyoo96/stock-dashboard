@@ -1,6 +1,21 @@
 const EYE_OPEN = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_CLOSED = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 
+// 동시 요청 수를 제한해서 브라우저 연결 자원 고갈(ERR_INSUFFICIENT_RESOURCES)을 방지
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let i = 0;
+  async function worker() {
+    while (i < items.length) {
+      const idx = i++;
+      try { results[idx] = await fn(items[idx], idx); }
+      catch (e) { results[idx] = { status: 'rejected', reason: e }; }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 const hiddenGraphStocks = new Set();
 let _graphValidData = [];
 const _graphReturns = new Map(); // symbol -> { ret, name, color }
@@ -70,10 +85,12 @@ function hideAllViews() {
   document.getElementById('stockChartsView').classList.add('hidden');
   document.getElementById('macroAnalysisView').classList.add('hidden');
   document.getElementById('mindmapView').classList.add('hidden');
+  document.getElementById('feedbackView').classList.add('hidden');
   document.getElementById('graphViewBtn').classList.remove('active');
   document.getElementById('stockChartsViewBtn').classList.remove('active');
   document.getElementById('macroAnalysisBtn').classList.remove('active');
   document.getElementById('mindmapBtn').classList.remove('active');
+  document.getElementById('feedbackBtn').classList.remove('active');
   Object.values(stockChartsInstances).forEach(c => c?.destroy());
   stockChartsInstances = {};
   hiddenGraphStocks.clear();
@@ -257,7 +274,7 @@ async function loadStockChartsView(period) {
   grid.innerHTML = stocks.map(s => {
     const id = s.symbol.replace(/[^a-zA-Z0-9]/g, '_');
     return `
-      <div class="scv-card">
+      <div class="scv-card" id="scv-card-${id}" data-symbol="${s.symbol}">
         <div class="scv-card-head">
           <div class="scv-card-info">
             <span class="scv-card-name">${s.name || s.symbol}</span>
@@ -274,7 +291,11 @@ async function loadStockChartsView(period) {
       </div>`;
   }).join('');
 
-  await Promise.allSettled(stocks.map(async s => {
+  grid.querySelectorAll('.scv-card').forEach(card => {
+    card.addEventListener('click', () => openChart(card.dataset.symbol));
+  });
+
+  await mapWithConcurrency(stocks, 6, async s => {
     const id = s.symbol.replace(/[^a-zA-Z0-9]/g, '_');
     try {
       const res = await fetch(`/api/chart/${encodeURIComponent(s.symbol)}?period=${period}`);
@@ -287,6 +308,7 @@ async function loadStockChartsView(period) {
       const ret   = (last - first) / first * 100;
       const sign  = ret >= 0 ? '+' : '';
       const cur   = s.currency || 'USD';
+      const lineColor = ret > 0 ? '#00d17a' : ret < 0 ? '#ff4655' : '#7b7f97';
 
       const priceEl = document.getElementById(`scvp-${id}`);
       const retEl   = document.getElementById(`scvr-${id}`);
@@ -300,64 +322,44 @@ async function loadStockChartsView(period) {
       if (!ctx) return;
 
       stockChartsInstances[s.symbol] = new Chart(ctx, {
-        type: 'candlestick',
+        type: 'line',
         data: {
           datasets: [{
-            data: data.dates.map((d, i) => ({
-              x: new Date(d).getTime(),
-              o: data.open[i],
-              h: data.high[i],
-              l: data.low[i],
-              c: data.close[i],
-            })),
-            color: {
-              up:        '#ef5350',
-              down:      '#1e88e5',
-              unchanged: '#888888',
-            },
+            data: data.dates.map((d, i) => ({ x: new Date(d).getTime(), y: data.close[i] })),
+            borderColor: lineColor,
+            backgroundColor: lineColor + '1a',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            tension: 0.25,
+            fill: true,
           }],
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
           plugins: {
             legend: { display: false },
             tooltip: {
               callbacks: {
-                label: c => {
-                  const r = c.raw;
-                  return [`시가 ${formatPrice(r.o, cur)}`, `고가 ${formatPrice(r.h, cur)}`, `저가 ${formatPrice(r.l, cur)}`, `종가 ${formatPrice(r.c, cur)}`];
-                },
+                label: c => formatPrice(c.parsed.y, cur),
+                title: () => '',
               },
             },
           },
           scales: {
-            x: {
-              type: 'timeseries',
-              grid: { display: false },
-              ticks: {
-                color: '#7b7f97', font: { size: 9 }, maxTicksLimit: 5,
-              },
-              time: {
-                displayFormats: { minute: 'HH:mm', hour: 'HH:mm', day: 'MM/dd', month: 'yyyy.MM', year: 'yyyy' },
-              },
-            },
-            y: {
-              position: 'right',
-              grid: { color: '#252836' },
-              ticks: {
-                color: '#7b7f97', font: { size: 9 }, maxTicksLimit: 4,
-                callback: v => formatPrice(v, cur),
-              },
-            },
+            x: { type: 'timeseries', display: false },
+            y: { display: false },
           },
         },
       });
     } catch {
       const wrap = document.getElementById(`scv-canvas-${id}`)?.parentElement;
-      if (wrap) wrap.innerHTML = '<p style="color:var(--muted);text-align:center;padding:30px;font-size:0.8rem">데이터 없음</p>';
+      if (wrap) wrap.innerHTML = '<p style="color:var(--muted);text-align:center;padding:14px;font-size:0.75rem">데이터 없음</p>';
     }
-  }));
+  });
 }
 
 async function loadGraphView(period, start = null, end = null) {
@@ -399,7 +401,7 @@ async function loadGraphView(period, start = null, end = null) {
       label: symbol,
       data: data.dates.map((d, j) => ({
         x: new Date(d).getTime(),
-        y: base > 0 ? +(data.close[j] / base * 100).toFixed(2) : null,
+        y: base > 0 ? +((data.close[j] / base - 1) * 100).toFixed(2) : null,
       })),
       borderColor: STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length],
       backgroundColor: 'transparent',
@@ -424,7 +426,7 @@ async function loadGraphView(period, start = null, end = null) {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(2)}`,
+            label: c => `${c.dataset.label}: ${c.parsed.y >= 0 ? '+' : ''}${c.parsed.y?.toFixed(2)}%`,
           },
         },
       },
@@ -446,11 +448,13 @@ async function loadGraphView(period, start = null, end = null) {
         },
         y: {
           position: 'right',
-          grid: { color: '#252836' },
+          grid: {
+            color: ctx => ctx.tick?.value === 0 ? '#7b7f97' : '#252836',
+          },
           ticks: {
             color: '#7b7f97',
             font: { size: 10 },
-            callback: v => v.toFixed(1),
+            callback: v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`,
           },
         },
       },
@@ -528,7 +532,7 @@ async function loadSectorChart(period = '1y') {
       .map(([sym, values]) => ({
         sym,
         label: SECTOR_ETFS.find(e => e.sym === sym)?.label || '',
-        ret: values[values.length - 1] - 100,
+        ret: values[values.length - 1],
       }))
       .sort((a, b) => b.ret - a.ret);
 
@@ -556,7 +560,7 @@ async function loadSectorChart(period = '1y') {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(1)}`,
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y?.toFixed(2)}%`,
           },
         },
       },
@@ -567,6 +571,8 @@ async function loadSectorChart(period = '1y') {
           ticks: { color: '#7b7f97', maxTicksLimit: 10, font: { size: 10 } },
           time: {
             displayFormats: {
+              minute: 'MM/dd HH:mm',
+              hour:   'MM/dd HH:mm',
               day:   'yy.MM.dd',
               week:  'yy.MM.dd',
               month: 'yyyy.MM',
@@ -576,11 +582,13 @@ async function loadSectorChart(period = '1y') {
         },
         y: {
           position: 'right',
-          grid: { color: '#252836' },
+          grid: {
+            color: ctx => ctx.tick?.value === 0 ? '#7b7f97' : '#252836',
+          },
           ticks: {
             color: '#7b7f97',
             font: { size: 10 },
-            callback: v => v.toFixed(0),
+            callback: v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`,
           },
         },
       },
@@ -605,6 +613,130 @@ function initSectorChartToggle() {
       btn.classList.add('active');
       loadSectorChart(btn.dataset.p);
     });
+  });
+}
+
+// ─── 섹터 상대강도 (vs S&P500) ────────────────────────────────
+const RS_PERIOD_LABELS = { '1mo': '1개월', '3mo': '3개월', '6mo': '6개월', '1y': '1년', '3y': '3년', '5y': '5년' };
+let relStrengthChart  = null;
+let relStrengthPeriod = '6mo';
+
+async function loadRelativeStrength() {
+  const container = document.getElementById('relStrengthRow');
+  if (!container) return;
+
+  if (!container.querySelector('.yc-toolbar')) {
+    container.innerHTML = `
+      <div class="yc-toolbar">
+        <div class="yc-periods">
+          ${Object.entries(RS_PERIOD_LABELS).map(([p, label]) =>
+            `<button class="yc-pbtn${p === relStrengthPeriod ? ' active' : ''}" data-p="${p}">${label}</button>`
+          ).join('')}
+        </div>
+      </div>
+      <div class="scs-body rs-body">
+        <div class="scs-chart-wrap">
+          <canvas id="relStrengthCanvas"></canvas>
+        </div>
+        <div id="relStrengthLegend" class="scs-legend"></div>
+      </div>`;
+
+    container.querySelectorAll('.yc-pbtn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        container.querySelectorAll('.yc-pbtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        relStrengthPeriod = btn.dataset.p;
+        fetchRelativeStrength();
+      });
+    });
+  }
+
+  await fetchRelativeStrength();
+}
+
+async function fetchRelativeStrength() {
+  try {
+    const res = await fetch(`/api/sector-relative-strength?period=${relStrengthPeriod}`);
+    if (!res.ok) return;
+    const { dates, series } = await res.json();
+    renderRelativeStrength(dates, series);
+  } catch {}
+}
+
+function renderRelativeStrength(dates, series) {
+  const ctx = document.getElementById('relStrengthCanvas');
+  if (!ctx || !dates || !dates.length) return;
+  if (relStrengthChart) relStrengthChart.destroy();
+
+  const datasets = Object.entries(series).map(([sym, values]) => ({
+    label: sym,
+    data: dates.map((d, i) => ({ x: new Date(d).getTime(), y: values[i] })),
+    borderColor: SECTOR_COLORS[sym] || '#888',
+    backgroundColor: 'transparent',
+    borderWidth: 1.8,
+    pointRadius: 0,
+    tension: 0.3,
+    spanGaps: true,
+  }));
+
+  const legend = document.getElementById('relStrengthLegend');
+  if (legend) {
+    const ranked = Object.entries(series)
+      .map(([sym, values]) => {
+        const last = [...values].reverse().find(v => v !== null && v !== undefined);
+        return { sym, label: SECTOR_ETFS.find(e => e.sym === sym)?.label || '', ret: last };
+      })
+      .filter(r => r.ret !== undefined)
+      .sort((a, b) => b.ret - a.ret);
+
+    legend.innerHTML = ranked.map(({ sym, label, ret }) => {
+      const sign  = ret >= 0 ? '+' : '';
+      const state = ret > 0 ? 'up' : ret < 0 ? 'down' : 'flat';
+      return `
+        <div class="scl-item">
+          <span class="scl-dot" style="background:${SECTOR_COLORS[sym]}"></span>
+          <span class="scl-sym">${sym}</span>
+          <span class="scl-label">${label}</span>
+          <span class="scl-ret ${state}">${sign}${ret.toFixed(1)}%</span>
+        </div>`;
+    }).join('');
+  }
+
+  relStrengthChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y?.toFixed(2)}%`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'timeseries',
+          grid: { color: '#252836' },
+          ticks: { color: '#7b7f97', maxTicksLimit: 10, font: { size: 10 } },
+          time: {
+            displayFormats: { day: 'yy.MM.dd', week: 'yy.MM.dd', month: 'yyyy.MM', year: 'yyyy' },
+          },
+        },
+        y: {
+          position: 'right',
+          grid: { color: ctx => ctx.tick?.value === 0 ? '#7b7f97' : '#252836' },
+          ticks: {
+            color: '#7b7f97',
+            font: { size: 10 },
+            callback: v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`,
+          },
+        },
+      },
+    },
   });
 }
 
@@ -1155,6 +1287,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initStockChartsView();
   initMacroAnalysisView();
   await initMindmap();
+  initFeedback();
   initSectorChartToggle();
   loadSectorChart();
   initIndexBar();
@@ -1172,7 +1305,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const ti = stocks.findIndex(s => s.symbol === toSym);
     stocks.splice(ti, 0, item);
     saveStocks();
-  });
+  }, { hScroll: true });
   fetchUsdKrw().then(() => {
     fetchIndexBar();
     fetchSectorBar();
@@ -1421,7 +1554,7 @@ async function fetchAllPrices() {
   fetchSectorBar();
   fetchMacroBar();
   fetchSectorGroupPerf();
-  await Promise.allSettled(stocks.map(s => fetchAndUpdateCard(s.symbol)));
+  await mapWithConcurrency(stocks, 6, s => fetchAndUpdateCard(s.symbol));
 }
 
 async function fetchAndUpdateCard(symbol) {
@@ -1522,7 +1655,7 @@ function renderCardPE(card, val, price, currency) {
   if (!el) return;
   const t = val.trailing_pe != null ? val.trailing_pe.toFixed(1) : '—';
   const f = val.forward_pe  != null ? val.forward_pe.toFixed(1)  : '—';
-  const fairs = price ? calcFairValues(val, price, currency) : [];
+  const fairs = price ? calcFairValues(val, price, currency).filter(fv => fv.label !== 'Graham') : [];
 
   const sectorEl = card.querySelector('.card-sector');
   if (sectorEl && val.sector_etf) {
@@ -2110,6 +2243,7 @@ function toggleMacroAnalysisView() {
     document.getElementById('macroAnalysisBtn').classList.add('active');
     loadYieldCurve();
     loadSectorHeatmap();
+    loadRelativeStrength();
     loadVixChart();
     loadIsmPmiChart();
     loadLeiChart();
@@ -3302,6 +3436,12 @@ function mmOnMouseMove(e) {
     document.body.style.cursor = 'grabbing';
   }
 
+  if (mmDrag.type === 'reorder') {
+    document.querySelector(`.mm-cat-stock[data-mm-id="${mmDrag.id}"]`)?.classList.add('mm-cs-reordering');
+    mmReorderDrag(mmDrag, e.clientX, e.clientY);
+    return;
+  }
+
   if (mmDrag.type === 'stock') {
     const s = mmData.stocks.find(s => s.id === mmDrag.id);
     if (!s || s.categoryId) return;
@@ -3352,11 +3492,63 @@ function mmOnMouseUp() {
     document.addEventListener('click', block, true);
     return;
   }
+  if (type === 'reorder' && moved) {
+    mmCommitReorder(id);
+    const block = e => { e.stopPropagation(); document.removeEventListener('click', block, true); };
+    document.addEventListener('click', block, true);
+    return;
+  }
   if (type !== 'pan' && moved) {
     mmSave();
     const block = e => { e.stopPropagation(); document.removeEventListener('click', block, true); };
     document.addEventListener('click', block, true);
   }
+}
+
+// 분류 카드 내 종목 순서 변경 — 드래그 중엔 DOM 행 자체를 옮기기만 함(재렌더링 X).
+// 카드를 통째로 다시 그리면 터치가 시작된 핸들 엘리먼트가 없어져서 이후 touchmove/touchend를
+// 못 받는 문제가 있어, 드래그 중에는 원본 노드를 유지한 채 순서만 바꾸고
+// 실제 mmData.stocks 반영은 드롭 시점에 mmCommitReorder에서 한 번에 처리.
+function mmReorderDrag(st, clientX, clientY) {
+  const dragRow = document.querySelector(`.mm-cat-stock[data-mm-id="${st.id}"]`);
+  if (!dragRow) return;
+  const overRow = document.elementFromPoint(clientX, clientY)?.closest('.mm-cat-stock');
+  if (!overRow || overRow === dragRow) return;
+
+  const draggedStock = mmData.stocks.find(s => s.id === st.id);
+  const overStock    = mmData.stocks.find(s => s.id === overRow.dataset.mmId);
+  if (!draggedStock || !overStock || draggedStock.categoryId !== overStock.categoryId) return;
+
+  const overRect    = overRow.getBoundingClientRect();
+  const insertAfter = clientY > overRect.top + overRect.height / 2;
+  if (insertAfter) overRow.after(dragRow);
+  else overRow.before(dragRow);
+}
+
+// 드래그가 끝난 카테고리의 실제 DOM 행 순서를 읽어 mmData.stocks에 반영하고 저장
+function mmCommitReorder(stockId) {
+  document.querySelector(`.mm-cat-stock[data-mm-id="${stockId}"]`)?.classList.remove('mm-cs-reordering');
+  const s = mmData.stocks.find(s => s.id === stockId);
+  if (!s || !s.categoryId) return;
+  const body = document.querySelector(`.mm-cat-node[data-mm-id="${s.categoryId}"] .mm-cat-body`);
+  if (!body) return;
+  const orderedIds = [...body.querySelectorAll('.mm-cat-stock')].map(r => r.dataset.mmId);
+  const byId = new Map(mmData.stocks.map(x => [x.id, x]));
+  const reordered = orderedIds.map(id => byId.get(id)).filter(x => x && x.categoryId === s.categoryId);
+  const rest = mmData.stocks.filter(x => x.categoryId !== s.categoryId);
+  mmData.stocks = [...rest, ...reordered];
+  mmSave();
+}
+
+// 백그라운드 데이터 갱신이 현재 드래그/롱프레스 중인 노드를 재렌더링해서
+// (터치 대상 DOM이 사라지거나 mm-move-ready 같은 임시 클래스가 날아가는 것을 방지)
+// 카드를 통째로 갈아치우기 전에, 그 카드가 지금 조작 중인지 확인
+function mmIsNodeBusy(id) {
+  const active = mmDrag || mmTouchSt;
+  if (!active) return false;
+  if (active.id === id) return true;
+  const s = mmData.stocks.find(s => s.id === active.id);
+  return !!(s && s.categoryId === id);
 }
 
 // Return a category that the given element's center is hovering over
@@ -3543,6 +3735,12 @@ function mmFmtRet(v) {
   return `<span class="mm-ret-val ${cls}">${v >= 0 ? '+' : ''}${v.toFixed(1)}%</span>`;
 }
 
+function mmFmtDrawdown(v) {
+  if (v == null) return `<span class="mm-dd-val">—</span>`;
+  if (v >= -0.05) return `<span class="mm-dd-val high">고점</span>`;
+  return `<span class="mm-dd-val down">${v.toFixed(1)}%</span>`;
+}
+
 // ── Element builders ─────────────────────────────────────────
 
 function mmMakeStockEl(stock) {
@@ -3567,12 +3765,15 @@ function mmMakeStockEl(stock) {
       <div class="mm-tags mm-tags-editable" title="클릭하여 태그 수정">
         ${stock.tags?.length ? stock.tags.map(t=>`<span class="mm-tag">${t}</span>`).join('') : '<span class="mm-tags-hint">+ 태그 추가</span>'}
       </div>
-      <div class="mm-returns">
-        <div class="mm-ret-row"><span class="mm-ret-lbl">1D</span>${mmFmtRet(r['1d'])}</div>
-        <div class="mm-ret-row"><span class="mm-ret-lbl">7D</span>${mmFmtRet(r['7d'])}</div>
-        <div class="mm-ret-row"><span class="mm-ret-lbl">1M</span>${mmFmtRet(r['1m'])}</div>
-        <div class="mm-ret-row"><span class="mm-ret-lbl">6M</span>${mmFmtRet(r['6m'])}</div>
-        <div class="mm-ret-row"><span class="mm-ret-lbl">1Y</span>${mmFmtRet(r['1y'])}</div>
+      <div class="mm-dd-row"><span class="mm-dd-lbl">고점대비</span>${mmFmtDrawdown(stock.drawdownPct)}</div>
+      <div class="mm-metrics">
+        <div class="mm-returns">
+          <div class="mm-ret-row"><span class="mm-ret-lbl">1D</span>${mmFmtRet(r['1d'])}</div>
+          <div class="mm-ret-row"><span class="mm-ret-lbl">7D</span>${mmFmtRet(r['7d'])}</div>
+          <div class="mm-ret-row"><span class="mm-ret-lbl">1M</span>${mmFmtRet(r['1m'])}</div>
+          <div class="mm-ret-row"><span class="mm-ret-lbl">6M</span>${mmFmtRet(r['6m'])}</div>
+          <div class="mm-ret-row"><span class="mm-ret-lbl">1Y</span>${mmFmtRet(r['1y'])}</div>
+        </div>
       </div>
     </div>`;
 
@@ -3593,10 +3794,11 @@ function mmMakeStockEl(stock) {
   div.querySelector('.mm-move-cat-btn').addEventListener('click', async e => {
     e.stopPropagation();
     if (!mmData.categories.length) { alert('먼저 분류를 추가해주세요.'); return; }
-    const opts = mmData.categories.map(c => c.name);
+    const catsDesc = [...mmData.categories].reverse();
+    const opts = catsDesc.map(c => c.name);
     const choice = await mmSelectDialog(`${stock.ticker}을(를) 이동할 분류 선택`, opts);
     if (choice === null) return;
-    stock.categoryId = mmData.categories[choice].id;
+    stock.categoryId = catsDesc[choice].id;
     mmSave(); mmRender();
   });
 
@@ -3665,6 +3867,7 @@ function mmMakeCatEl(cat) {
         ${s.tags?.length ? s.tags.map(t=>`<span class="mm-tag mm-tag-sm">${t}</span>`).join('') : '<span class="mm-tags-hint">+태그</span>'}
       </div>
       <div class="mm-cs-rets">
+        <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">고점대비</span>${mmFmtDrawdown(s.drawdownPct)}</span>
         <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">1D</span>${mmFmtRet(r['1d'])}</span>
         <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">7D</span>${mmFmtRet(r['7d'])}</span>
         <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">1M</span>${mmFmtRet(r['1m'])}</span>
@@ -3672,6 +3875,7 @@ function mmMakeCatEl(cat) {
         <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">1Y</span>${mmFmtRet(r['1y'])}</span>
       </div>
       <div class="mm-cs-actions">
+        <span class="mm-cs-drag-handle" title="순서 변경">⠿</span>
         <button class="mm-cs-move-btn" title="분류 변경">↔</button>
         <button class="mm-cs-del-btn mm-del-btn" data-del-id="${s.id}" data-del-type="stock" title="제거">×</button>
       </div>`;
@@ -3679,7 +3883,8 @@ function mmMakeCatEl(cat) {
     // Move to different category / standalone
     sEl.querySelector('.mm-cs-move-btn').addEventListener('click', async e => {
       e.stopPropagation();
-      const opts = ['(단독 배치)', ...mmData.categories.filter(c => c.id !== cat.id).map(c => c.name)];
+      const otherCatsDesc = [...mmData.categories].reverse().filter(c => c.id !== cat.id);
+      const opts = ['(단독 배치)', ...otherCatsDesc.map(c => c.name)];
       const choice = await mmSelectDialog(`${s.ticker} 이동`, opts);
       if (choice === null) return;
       if (choice === 0) {
@@ -3690,7 +3895,7 @@ function mmMakeCatEl(cat) {
           y: cat.position.y + (Math.random() - 0.5) * 80,
         };
       } else {
-        s.categoryId = mmData.categories.filter(c => c.id !== cat.id)[choice - 1].id;
+        s.categoryId = otherCatsDesc[choice - 1].id;
       }
       mmSave(); mmRender();
     });
@@ -3803,7 +4008,7 @@ async function mmAddStock(symbol, name) {
     return;
   }
 
-  const cats = mmData.categories;
+  const cats = [...mmData.categories].reverse();
   let catId = null;
   if (cats.length > 0) {
     const opts = ['(단독 배치)', ...cats.map(c => c.name)];
@@ -3837,14 +4042,16 @@ async function mmAddStock(symbol, name) {
 
 async function mmFetchReturns(stockId, symbol) {
   try {
-    const [perfResult, priceResult] = await Promise.allSettled([
+    const [perfResult, priceResult, athResult] = await Promise.allSettled([
       fetchPerformance(symbol),
       fetchPrice(symbol),
+      fetch(`/api/ath/${encodeURIComponent(symbol)}`).then(r => r.ok ? r.json() : {}),
     ]);
     const s = mmData.stocks.find(s => s.id === stockId);
     if (!s) return;
     const perf  = perfResult.status  === 'fulfilled' ? perfResult.value  : {};
     const price = priceResult.status === 'fulfilled' ? priceResult.value : {};
+    const ath   = athResult.status    === 'fulfilled' ? athResult.value   : {};
     s.returns = {
       '1d': price.change_pct ?? null,   // /api/price 의 change_pct 사용
       '7d': perf['5d']   ?? null,
@@ -3852,17 +4059,21 @@ async function mmFetchReturns(stockId, symbol) {
       '6m': perf['6mo']  ?? null,
       '1y': perf['1y']   ?? null,
     };
+    s.drawdownPct = ath.drawdown_pct ?? null;
     mmSave();
-    // Re-render the affected element
+    // Re-render the affected element — 단, 지금 드래그/롱프레스 중인 카드라면
+    // 건드리지 않음 (재렌더링하면 터치 대상 DOM이 사라져 제스처가 끊김)
     const canvas = document.getElementById('mmCanvas');
     if (!canvas) return;
     const old = canvas.querySelector(`[data-mm-id="${stockId}"]`);
     if (!old) return;
     if (s.categoryId) {
+      if (mmIsNodeBusy(s.categoryId)) return;
       const catEl = canvas.querySelector(`[data-mm-id="${s.categoryId}"]`);
       const cat   = mmData.categories.find(c => c.id === s.categoryId);
       if (catEl && cat) catEl.replaceWith(mmMakeCatEl(cat));
     } else {
+      if (mmIsNodeBusy(stockId)) return;
       old.replaceWith(mmMakeStockEl(s));
     }
     mmRenderEdges();
@@ -3893,8 +4104,12 @@ function mmSelectDialog(title, options) {
 
 // ── 마인드맵 열릴 때마다 모든 종목 수익률 새로 갱신 ─────────────
 
-function mmRefreshAllReturns() {
-  mmData.stocks.forEach(s => mmFetchReturns(s.id, s.ticker));
+async function mmRefreshAllReturns() {
+  const stocks = mmData.stocks;
+  const limit = 3; // 동시 요청 수 제한
+  for (let i = 0; i < stocks.length; i += limit) {
+    await Promise.allSettled(stocks.slice(i, i + limit).map(s => mmFetchReturns(s.id, s.ticker)));
+  }
 }
 
 // ── Name migration: fix stocks where name was stored as ticker ─
@@ -3957,6 +4172,12 @@ async function mmDoSearch(q) {
 function mmInitTouch() {
   const vp = document.getElementById('mmViewport');
 
+  // 안드로이드 등에서 길게 누르면 뜨는 기본 컨텍스트 메뉴가 2초 홀드 제스처를
+  // 가로채는 것을 방지 (카드/노드 위에서만 차단)
+  vp.addEventListener('contextmenu', e => {
+    if (e.target.closest('.mm-node, .mm-cat-node')) e.preventDefault();
+  });
+
   vp.addEventListener('touchstart', e => {
     // Two-finger pinch zoom
     if (e.touches.length === 2) {
@@ -3983,6 +4204,17 @@ function mmInitTouch() {
     // Button inside a node → let native click fire, do NOT preventDefault
     if (el.closest('button')) return;
 
+    // 분류 카드 내 종목 순서 변경 핸들
+    const reorderHandle = el.closest('.mm-cs-drag-handle');
+    if (reorderHandle) {
+      const row = reorderHandle.closest('.mm-cat-stock');
+      const s = mmData.stocks.find(s => s.id === row?.dataset.mmId);
+      if (!s) return;
+      e.preventDefault();
+      mmTouchSt = { type: 'reorder', id: s.id, sx: touch.clientX, sy: touch.clientY, moved: false };
+      return;
+    }
+
     // Whole node/category → drag, long-press connect, or tap
     const nodeEl = el.closest('.mm-node, .mm-cat-node');
     if (nodeEl) {
@@ -3990,6 +4222,10 @@ function mmInitTouch() {
       const isCat = nodeEl.classList.contains('mm-cat-node');
       if (isCat && el.closest('.mm-cs-info')) return;
       const type = isCat ? 'cat' : 'stock';
+      // 카드를 옮길 땐 반드시 드래그 핸들(⠿)을 잡아야 함 — 그 외 카드 영역은
+      // 화면 이동(pan) 제스처로 처리해서, 모바일에서 화면을 스와이프하다가
+      // 카드가 화면 대부분을 차지해 실수로 카드째로 끌려가는 것을 방지
+      const onHandle = !!el.closest('.mm-drag-handle');
 
       // Already in connect mode → this touch selects target
       if (mmMode === 'connect' && mmConnSrc && mmConnSrc !== mmId) {
@@ -4004,18 +4240,37 @@ function mmInitTouch() {
       if (!node || (type === 'stock' && node.categoryId)) return;
       e.preventDefault();
 
-      // Long-press: 600ms → enter connect mode
-      mmLongPressTimer = setTimeout(() => {
-        mmLongPressTimer = null;
-        if (mmTouchSt?.moved) return;
-        mmTouchSt = null;
-        mmStartConnectFrom(mmId);
-      }, 600);
+      if (onHandle) {
+        // 핸들을 잡은 경우: 기존과 동일 — 즉시 이동 가능, 600ms 유지 시 연결모드
+        mmLongPressTimer = setTimeout(() => {
+          mmLongPressTimer = null;
+          if (mmTouchSt?.moved) return;
+          mmTouchSt = null;
+          mmStartConnectFrom(mmId);
+        }, 600);
 
-      mmTouchSt = { type: 'node', dragType: type, id: mmId,
-        sx: touch.clientX, sy: touch.clientY,
-        ox: node.position.x, oy: node.position.y,
-        moved: false, tapEl: el };
+        mmTouchSt = { type: 'node', dragType: type, id: mmId,
+          sx: touch.clientX, sy: touch.clientY,
+          ox: node.position.x, oy: node.position.y,
+          moved: false, tapEl: el };
+      } else {
+        // 카드 몸통을 잡은 경우: 처음엔 화면 이동(pan) 후보로 시작하고,
+        // 0.3초간 움직이지 않고 누르고 있으면 카드를 옮길 수 있는 상태로 전환
+        // (작은 핸들 아이콘을 정확히 터치하기 어려운 문제 보완)
+        mmTouchSt = { type: 'pan', sx: touch.clientX, sy: touch.clientY,
+          ox: mmTx.x, oy: mmTx.y, moved: false, tapEl: el };
+
+        mmLongPressTimer = setTimeout(() => {
+          mmLongPressTimer = null;
+          if (!mmTouchSt || mmTouchSt.moved) return; // 이미 스와이프(화면 이동) 중이면 무시
+          mmTouchSt = { type: 'node', dragType: type, id: mmId,
+            sx: touch.clientX, sy: touch.clientY,
+            ox: node.position.x, oy: node.position.y,
+            moved: false, tapEl: el };
+          if (navigator.vibrate) navigator.vibrate(25);
+          nodeEl.classList.add('mm-move-ready');
+        }, 300);
+      }
       return;
     }
 
@@ -4050,6 +4305,15 @@ function mmInitTouch() {
     const dy = touch.clientY - mmTouchSt.sy;
 
     if (mmTouchSt.type === 'pan') {
+      // tapEl이 있는(카드 위에서 시작한) pan은 살짝 움직임 유예를 둬서
+      // 단순 탭과 스와이프(화면 이동)를 구분.
+      // 임계값을 넉넉히 잡아서 2초 홀드 도중 손가락이 미세하게 떨리는 정도로는
+      // 화면 이동으로 오인해 홀드(이동 가능 상태 전환) 타이머가 취소되지 않게 함
+      if (mmTouchSt.tapEl && !mmTouchSt.moved) {
+        if (Math.abs(dx) < 18 && Math.abs(dy) < 18) return;
+        mmTouchSt.moved = true;
+        clearTimeout(mmLongPressTimer); mmLongPressTimer = null;
+      }
       e.preventDefault();
       mmTx.x = mmTouchSt.ox + dx;
       mmTx.y = mmTouchSt.oy + dy;
@@ -4075,12 +4339,21 @@ function mmInitTouch() {
       document.querySelectorAll('.mm-drop-target').forEach(e => e.classList.remove('mm-drop-target'));
       if (tgt) document.querySelector(`[data-mm-id="${tgt.id}"]`)?.classList.add('mm-drop-target');
       mmRenderEdges();
+    } else if (mmTouchSt.type === 'reorder') {
+      if (!mmTouchSt.moved) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        mmTouchSt.moved = true;
+      }
+      e.preventDefault();
+      document.querySelector(`.mm-cat-stock[data-mm-id="${mmTouchSt.id}"]`)?.classList.add('mm-cs-reordering');
+      mmReorderDrag(mmTouchSt, touch.clientX, touch.clientY);
     }
   }, { passive: false });
 
   vp.addEventListener('touchend', e => {
     clearTimeout(mmLongPressTimer); mmLongPressTimer = null;
     document.querySelectorAll('.mm-drop-target').forEach(e => e.classList.remove('mm-drop-target'));
+    document.querySelectorAll('.mm-move-ready').forEach(e => e.classList.remove('mm-move-ready'));
     if (!mmTouchSt) return;
     const st = mmTouchSt;
     mmTouchSt = null;
@@ -4095,8 +4368,10 @@ function mmInitTouch() {
         }
       }
       mmSave();
-    } else if (st.type === 'node' && !st.moved && st.tapEl) {
-      // Short tap — dispatch to whichever interactive element was touched
+    } else if (st.type === 'reorder' && st.moved) {
+      mmCommitReorder(st.id);
+    } else if ((st.type === 'node' || st.type === 'pan') && !st.moved && st.tapEl) {
+      // Short tap (핸들이 아닌 카드 위 pan-대기 상태 포함) — 눌린 요소에 따라 동작 분기
       const tagsEl  = st.tapEl.closest('.mm-tags-editable');
       const nameEl  = st.tapEl.closest('.mm-cat-name');
       const clickEl = st.tapEl.closest('[data-click-id]');
@@ -4108,6 +4383,7 @@ function mmInitTouch() {
 
   vp.addEventListener('touchcancel', () => {
     clearTimeout(mmLongPressTimer); mmLongPressTimer = null;
+    document.querySelectorAll('.mm-move-ready').forEach(e => e.classList.remove('mm-move-ready'));
     mmTouchSt = null;
   }, { passive: true });
 }
@@ -4189,6 +4465,16 @@ async function initMindmap() {
     if (e.button !== 0) return;
     if (e.target.closest('button')) return;
 
+    const reorderHandle = e.target.closest('.mm-cs-drag-handle');
+    if (reorderHandle) {
+      const row = reorderHandle.closest('.mm-cat-stock');
+      const s = mmData.stocks.find(s => s.id === row?.dataset.mmId);
+      if (!s) return;
+      e.preventDefault();
+      mmDrag = { type: 'reorder', id: s.id, sx: e.clientX, sy: e.clientY, moved: false };
+      return;
+    }
+
     const nodeEl = e.target.closest('.mm-node');
     const catEl  = e.target.closest('.mm-cat-node');
     const anyNode = nodeEl || catEl;
@@ -4255,5 +4541,123 @@ async function initMindmap() {
 
   document.addEventListener('click', e => {
     if (!e.target.closest('.mm-search-wrap')) sd.classList.add('hidden');
+  });
+}
+
+// ─── 피드백 게시판 ──────────────────────────────────────────
+let feedbackList = [];
+let feedbackFilter = 'all';
+
+function fbEscape(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+async function fbLoad() {
+  try {
+    const res = await fetch('/api/feedback');
+    if (res.ok) feedbackList = await res.json();
+  } catch {}
+  fbRender();
+}
+
+function fbRender() {
+  const list = document.getElementById('fbList');
+  if (!list) return;
+  const filtered = feedbackList.filter(f => feedbackFilter === 'all' || f.status === feedbackFilter);
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="fb-empty">등록된 피드백이 없습니다.</div>';
+    return;
+  }
+  list.innerHTML = filtered.map(f => `
+    <div class="fb-item ${f.status}" data-id="${f.id}">
+      <div class="fb-item-main">
+        <span class="fb-status-badge ${f.status}">${f.status === 'done' ? '완료' : '미완료'}</span>
+        <p class="fb-content">${fbEscape(f.content)}</p>
+      </div>
+      <div class="fb-item-side">
+        <span class="fb-date">${f.created_at.slice(0, 16).replace('T', ' ')}</span>
+        <button class="fb-toggle-btn" data-id="${f.id}" data-status="${f.status}">
+          ${f.status === 'done' ? '미완료로 되돌리기' : '완료 처리'}
+        </button>
+        <button class="fb-del-btn" data-id="${f.id}" title="삭제">✕</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function initFeedback() {
+  document.getElementById('feedbackBtn').addEventListener('click', () => {
+    const showing = !document.getElementById('feedbackView').classList.contains('hidden');
+    hideAllViews();
+    if (!showing) {
+      document.querySelector('main').classList.add('hidden');
+      document.getElementById('feedbackView').classList.remove('hidden');
+      document.getElementById('feedbackBtn').classList.add('active');
+      fbLoad();
+    }
+  });
+
+  document.getElementById('feedbackBackBtn').addEventListener('click', hideAllViews);
+
+  document.getElementById('fbSubmitBtn').addEventListener('click', async () => {
+    const input = document.getElementById('fbInput');
+    const content = input.value.trim();
+    if (!content) return;
+    try {
+      const res = await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+      if (res.ok) {
+        const created = await res.json();
+        feedbackList.unshift(created);
+        input.value = '';
+        fbRender();
+      }
+    } catch {}
+  });
+
+  document.querySelectorAll('.fb-fbtn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.fb-fbtn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      feedbackFilter = btn.dataset.f;
+      fbRender();
+    });
+  });
+
+  document.getElementById('fbList').addEventListener('click', async e => {
+    const toggleBtn = e.target.closest('.fb-toggle-btn');
+    const delBtn = e.target.closest('.fb-del-btn');
+
+    if (toggleBtn) {
+      const id = Number(toggleBtn.dataset.id);
+      const newStatus = toggleBtn.dataset.status === 'done' ? 'pending' : 'done';
+      try {
+        const res = await fetch(`/api/feedback/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus }),
+        });
+        if (res.ok) {
+          const item = feedbackList.find(f => f.id === id);
+          if (item) item.status = newStatus;
+          fbRender();
+        }
+      } catch {}
+    } else if (delBtn) {
+      const id = Number(delBtn.dataset.id);
+      if (!confirm('이 피드백을 삭제할까요?')) return;
+      try {
+        const res = await fetch(`/api/feedback/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          feedbackList = feedbackList.filter(f => f.id !== id);
+          fbRender();
+        }
+      } catch {}
+    }
   });
 }

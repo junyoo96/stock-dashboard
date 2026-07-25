@@ -8,6 +8,7 @@ import time
 import csv
 import sqlite3
 import json
+import math
 import os
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
@@ -39,6 +40,15 @@ def init_db():
                 value TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                content      TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                created_at   TEXT NOT NULL,
+                completed_at TEXT
+            )
+        """)
         conn.commit()
 
 init_db()
@@ -55,6 +65,12 @@ class StocksPayload(BaseModel):
 
 class SettingPayload(BaseModel):
     value: str
+
+class FeedbackPayload(BaseModel):
+    content: str
+
+class FeedbackStatusPayload(BaseModel):
+    status: str
 
 _cache: dict = {}
 
@@ -187,23 +203,32 @@ async def search_stocks(q: str):
     return results
 
 
+def _clean_num(v):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    return v
+
+
 def _fetch_price(symbol: str) -> dict:
-    ticker = yf.Ticker(symbol)
-    fi = ticker.fast_info
-    price = fi.last_price
-    # regular_market_previous_close = 실제 정규장 전일 종가
-    # previous_close 는 after-hours 가격 등이 섞여 부정확한 경우가 있음
-    prev = fi.regular_market_previous_close or fi.previous_close
-    if price is None or prev is None:
-        raise ValueError(f"가격 데이터 없음: {symbol}")
-    change = price - prev
-    return {
-        "symbol": symbol,
-        "price": round(price, 2),
-        "change": round(change, 2),
-        "change_pct": round(change / prev * 100, 2),
-        "currency": fi.currency or "USD",
-    }
+    try:
+        ticker = yf.Ticker(symbol)
+        fi = ticker.fast_info
+        price = _clean_num(fi.last_price)
+        prev = _clean_num(fi.regular_market_previous_close) or _clean_num(fi.previous_close)
+        if price is None or prev is None:
+            raise ValueError(f"가격 데이터 없음: {symbol}")
+        change = price - prev
+        return {
+            "symbol": symbol,
+            "price": round(price, 2),
+            "change": round(change, 2),
+            "change_pct": round(change / prev * 100, 2),
+            "currency": fi.currency or "USD",
+        }
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"데이터 조회 실패: {symbol}")
 
 
 @app.get("/api/price/{symbol}")
@@ -216,6 +241,43 @@ async def get_price(symbol: str):
     try:
         result = await loop.run_in_executor(executor, _fetch_price, symbol)
         cache_set(f"price:{symbol}", result)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _fetch_ath(symbol: str) -> dict:
+    ticker = yf.Ticker(symbol)
+    # 최근 1년 내 최고가 기준.
+    # auto_adjust=False: 배당 조정을 끄고 원 가격으로 조회.
+    # (분할은 야후 원본 데이터에 이미 반영돼 있어 조정 없이도 현재가와 스케일이 맞지만,
+    #  auto_adjust=True는 배당까지 소급 조정해 과거 고점이 실제보다 낮게 나오는 문제가 있음 — 예: MO, T)
+    hist = ticker.history(period='1y', auto_adjust=False)
+    if hist.empty:
+        raise ValueError(f"고점 데이터 없음: {symbol}")
+    ath = float(hist['High'].max())
+    price = _clean_num(ticker.fast_info.last_price) or float(hist['Close'].iloc[-1])
+    drawdown_pct = round((price - ath) / ath * 100, 2) if ath else None
+    return {
+        "symbol": symbol,
+        "ath": round(ath, 4),
+        "price": round(price, 4),
+        "drawdown_pct": drawdown_pct,
+    }
+
+
+@app.get("/api/ath/{symbol}")
+async def get_ath(symbol: str):
+    symbol = symbol.upper()
+    cached = cache_get(f"ath:{symbol}", 86400)
+    if cached is not None:
+        return cached
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(executor, _fetch_ath, symbol)
+        cache_set(f"ath:{symbol}", result)
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -301,11 +363,13 @@ SECTOR_ETF_MAP = {
 
 
 def _fetch_valuation(symbol: str) -> dict:
-    info  = yf.Ticker(symbol).info
+    ticker = yf.Ticker(symbol)
+    info   = ticker.info
     t     = info.get("trailingPE")
     f     = info.get("forwardPE")
     bv    = info.get("bookValue")
     price = info.get("currentPrice") or info.get("regularMarketPrice")
+    shares = info.get("sharesOutstanding")
 
     # trailingPE 없으면 trailingEps + 현재가로 계산
     if t is None and price:
@@ -318,6 +382,30 @@ def _fetch_valuation(symbol: str) -> dict:
         feps = info.get("forwardEps")
         if feps and float(feps) > 0:
             f = float(price) / float(feps)
+
+    # 일부 해외 종목(예: 삼성전자)은 info에 trailingPE/bookValue가 비어 있어
+    # 분기 재무제표(순이익 4개 분기 합, 최근 자기자본)로 재계산
+    if (t is None or bv is None) and shares:
+        if t is None and price:
+            try:
+                qis = ticker.quarterly_income_stmt
+                if qis is not None and "Net Income" in qis.index:
+                    ni = qis.loc["Net Income"].iloc[:4].dropna()
+                    if len(ni) == 4 and ni.sum() > 0:
+                        teps = ni.sum() / shares
+                        if teps > 0:
+                            t = price / teps
+            except Exception:
+                pass
+        if bv is None:
+            try:
+                qbs = ticker.quarterly_balance_sheet
+                if qbs is not None and "Stockholders Equity" in qbs.index:
+                    equity = qbs.loc["Stockholders Equity"].dropna()
+                    if not equity.empty and equity.iloc[0] > 0:
+                        bv = equity.iloc[0] / shares
+            except Exception:
+                pass
 
     sector     = info.get("sector")
     sector_etf = SECTOR_ETF_MAP.get(sector) if sector else None
@@ -381,12 +469,15 @@ async def search_macro(q: str):
     ][:8]
 
 _SECTOR_CHART_INTERVAL = {
+    '1d': '5m', '5d': '15m',
     '1mo': '1d', '3mo': '1d', '6mo': '1wk',
     '1y':  '1wk', '3y': '1mo', '5y':  '1mo',
 }
 
 def _fetch_sector_chart(period: str) -> dict:
     interval = _SECTOR_CHART_INTERVAL.get(period, '1mo')
+    intraday = period in ('1d', '5d')
+    fmt = '%Y-%m-%dT%H:%M:%S' if intraday else '%Y-%m-%d'
     symbols  = ['XLRE','XLU','XLC','XLK','XLF','XLV','XLI','XLP','XLY','XLB','XLE']
     dates    = None
     series   = {}
@@ -396,12 +487,12 @@ def _fetch_sector_chart(period: str) -> dict:
             if hist.empty:
                 continue
             if dates is None:
-                dates = hist.index.strftime('%Y-%m-%d').tolist()
+                dates = hist.index.strftime(fmt).tolist()
             closes = [float(c) for c in hist['Close']]
             base   = closes[0]
             if base == 0:
                 continue
-            series[sym] = [round(c / base * 100, 2) for c in closes]
+            series[sym] = [round((c / base - 1) * 100, 2) for c in closes]
         except Exception:
             continue
     return {'dates': dates or [], 'series': series}
@@ -418,6 +509,62 @@ async def get_sector_chart(period: str = '1y'):
     try:
         result = await loop.run_in_executor(executor, _fetch_sector_chart, period)
         cache_set(f"sector-chart:{period}", result)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+_RS_PERIODS = {'1mo', '3mo', '6mo', '1y', '3y', '5y'}
+
+def _fetch_sector_relative_strength(period: str) -> dict:
+    interval = _SECTOR_CHART_INTERVAL.get(period, '1wk')
+    fmt = '%Y-%m-%d'
+    symbols = ['XLRE', 'XLU', 'XLC', 'XLK', 'XLF', 'XLV', 'XLI', 'XLP', 'XLY', 'XLB', 'XLE']
+
+    bench_hist = yf.Ticker('SPY').history(period=period, interval=interval)
+    if bench_hist.empty:
+        return {'dates': [], 'series': {}}
+    dates = bench_hist.index.strftime(fmt).tolist()
+    bench_map = {d: float(c) for d, c in zip(dates, bench_hist['Close'])}
+
+    series = {}
+    for sym in symbols:
+        try:
+            hist = yf.Ticker(sym).history(period=period, interval=interval)
+            if hist.empty:
+                continue
+            sym_map = {d: float(c) for d, c in zip(hist.index.strftime(fmt).tolist(), hist['Close'])}
+            base = None
+            values = []
+            for d in dates:
+                b = bench_map.get(d)
+                c = sym_map.get(d)
+                if b and c:
+                    ratio = c / b
+                    if base is None:
+                        base = ratio
+                    values.append(round((ratio / base - 1) * 100, 2))
+                else:
+                    values.append(None)
+            if base is not None:
+                series[sym] = values
+        except Exception:
+            continue
+    return {'dates': dates, 'series': series}
+
+
+@app.get("/api/sector-relative-strength")
+async def get_sector_relative_strength(period: str = '6mo'):
+    if period not in _RS_PERIODS:
+        period = '6mo'
+    cache_key = f"sector-rs:{period}"
+    cached = cache_get(cache_key, 3600)
+    if cached is not None:
+        return cached
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(executor, _fetch_sector_relative_strength, period)
+        cache_set(cache_key, result)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -751,6 +898,57 @@ def db_save_setting(key: str, payload: SettingPayload):
             (key, payload.value),
         )
         conn.commit()
+    return {"ok": True}
+
+
+@app.get("/api/feedback")
+def get_feedback():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, content, status, created_at, completed_at FROM feedback ORDER BY id DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/feedback")
+def create_feedback(payload: FeedbackPayload):
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="내용을 입력해주세요.")
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO feedback (content, status, created_at) VALUES (?, 'pending', ?)",
+            (content, now),
+        )
+        conn.commit()
+        new_id = cur.lastrowid
+    return {"id": new_id, "content": content, "status": "pending", "created_at": now, "completed_at": None}
+
+
+@app.put("/api/feedback/{feedback_id}")
+def update_feedback_status(feedback_id: int, payload: FeedbackStatusPayload):
+    if payload.status not in ("pending", "done"):
+        raise HTTPException(status_code=400, detail="잘못된 상태 값입니다.")
+    completed_at = datetime.datetime.now().isoformat(timespec="seconds") if payload.status == "done" else None
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE feedback SET status = ?, completed_at = ? WHERE id = ?",
+            (payload.status, completed_at, feedback_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+@app.delete("/api/feedback/{feedback_id}")
+def delete_feedback(feedback_id: int):
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM feedback WHERE id = ?", (feedback_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
 
 

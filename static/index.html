@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=57" />
+  <link rel="stylesheet" href="style.css?v=69" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -21,6 +21,7 @@
           <button id="stockChartsViewBtn" class="graph-btn">종목별 그래프</button>
           <button id="macroAnalysisBtn" class="graph-btn">거시경제 분석</button>
           <button id="mindmapBtn" class="graph-btn">마인드맵</button>
+          <button id="feedbackBtn" class="graph-btn">피드백</button>
         </div>
         <div class="search-wrap">
           <input id="searchInput" type="text" placeholder="종목 검색 (예: AAPL, 삼성전자, 005930.KS)..." autocomplete="off" />
@@ -57,8 +58,10 @@
   <main>
     <div class="sector-chart-section">
       <div class="scs-header" id="sectorChartToggle">
-        <span class="scs-title">섹터 ETF 수익률 추이 <span class="scs-sub">(기준=100)</span></span>
+        <span class="scs-title">섹터 ETF 수익률 추이 <span class="scs-sub">(기준=0%)</span></span>
         <div class="scs-periods">
+          <button class="scs-pbtn" data-p="1d">1일</button>
+          <button class="scs-pbtn" data-p="5d">7일</button>
           <button class="scs-pbtn" data-p="1mo">1개월</button>
           <button class="scs-pbtn" data-p="3mo">3개월</button>
           <button class="scs-pbtn" data-p="6mo">6개월</button>
@@ -104,6 +107,16 @@
         <span class="mav-sec-sub">기간 헤더 클릭 시 정렬</span>
       </div>
       <div id="heatmapTable" class="hm-wrap">
+        <div class="yc-loading">로딩 중...</div>
+      </div>
+    </div>
+
+    <div class="mav-section" data-section="relative-strength">
+      <div class="mav-sec-header">
+        <span class="mav-drag-handle">⠿</span>
+        <span class="mav-sec-title">섹터 상대강도 <span class="mav-sec-sub">(vs S&P500, 기준=0%)</span></span>
+      </div>
+      <div id="relStrengthRow">
         <div class="yc-loading">로딩 중...</div>
       </div>
     </div>
@@ -234,6 +247,23 @@
     </div>
   </div>
 
+  <div id="feedbackView" class="feedback-view hidden">
+    <div class="fb-toolbar">
+      <button id="feedbackBackBtn" class="gv-back">← 대시보드</button>
+      <span class="fb-title">피드백 게시판</span>
+    </div>
+    <div class="fb-write">
+      <textarea id="fbInput" class="fb-textarea" placeholder="웹페이지 기능에 대한 의견이나 개선사항을 남겨주세요..." rows="3"></textarea>
+      <button id="fbSubmitBtn" class="fb-submit-btn">등록</button>
+    </div>
+    <div class="fb-filter">
+      <button class="fb-fbtn active" data-f="all">전체</button>
+      <button class="fb-fbtn" data-f="pending">미완료</button>
+      <button class="fb-fbtn" data-f="done">완료</button>
+    </div>
+    <div id="fbList" class="fb-list"></div>
+  </div>
+
   <div id="overlay" class="overlay hidden"></div>
   <div id="modal" class="modal hidden">
     <div class="modal-head">
@@ -256,6 +286,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=72"></script>
+  <script src="app.js?v=91"></script>
 </body>
 </html>

@@ -3,3 +3,4 @@
 *.pyo
 .env
 venv/
+.bin/

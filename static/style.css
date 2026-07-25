@@ -498,6 +498,7 @@ header {
   border-radius: 7px;
   padding: 5px 7px 5px;
   min-width: 120px;
+  flex-shrink: 0;
 }
 .mc-cat-group-hd {
   font-size: 0.65rem;
@@ -1558,22 +1559,26 @@ main {
 
 .scv-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
 }
 
 .scv-card {
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 14px;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s;
 }
+.scv-card:hover { border-color: var(--accent); }
+.scv-card:active { transform: scale(0.98); }
 
 .scv-card-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .scv-card-info {
@@ -1616,7 +1621,7 @@ main {
 
 .scv-chart-wrap {
   position: relative;
-  height: 160px;
+  height: 56px;
 }
 
 /* period 버튼은 .gv-pbtn 대신 .scv-pbtn 사용 */
@@ -1776,6 +1781,12 @@ main {
 .yc-chart-wrap {
   position: relative;
   height: 240px;
+}
+
+.rs-body {
+  height: 240px;
+  padding: 0;
+  margin-top: 12px;
 }
 
 .yc-spread-wrap {
@@ -2097,6 +2108,8 @@ main {
   border-radius: 10px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.2);
   user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: none;
   cursor: grab;
   transition: box-shadow 0.15s, border-color 0.15s;
 }
@@ -2175,6 +2188,18 @@ main {
 }
 .mm-tag-sm { font-size: 9px; padding: 1px 4px; }
 
+.mm-dd-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 9px;
+}
+.mm-dd-lbl { color: var(--muted); }
+.mm-dd-val { font-weight: 700; color: var(--muted); }
+.mm-dd-val.down { color: var(--red); }
+.mm-dd-val.high { color: var(--green); }
+
 .mm-returns {
   margin-top: 5px;
   border-top: 1px solid var(--border);
@@ -2183,6 +2208,7 @@ main {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 2px;
   overflow: hidden;
+  flex: 1;
 }
 .mm-ret-row {
   display: flex;
@@ -2210,6 +2236,12 @@ main {
 .mm-ret-val.up   { color: var(--green); }
 .mm-ret-val.down { color: var(--red); }
 
+.mm-metrics {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
 /* Category Node */
 .mm-cat-node {
   position: absolute;
@@ -2221,6 +2253,8 @@ main {
   border-radius: 12px;
   box-shadow: 0 2px 14px rgba(0,0,0,0.25);
   user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: none;
   cursor: grab;
 }
 .mm-cat-node:active { cursor: grabbing; }
@@ -2350,6 +2384,18 @@ main {
 }
 .mm-cat-stock:hover .mm-cs-actions { opacity: 1; }
 
+.mm-cs-drag-handle {
+  width: 18px; height: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: grab;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  touch-action: none;
+}
+.mm-cs-drag-handle:hover { color: var(--text); }
+.mm-cs-reordering { opacity: 0.4; }
+
 .mm-cs-move-btn {
   width: 18px; height: 18px;
   border: none; border-radius: 4px;
@@ -2378,6 +2424,14 @@ main {
   outline: 2px dashed var(--accent) !important;
   outline-offset: 3px;
   box-shadow: 0 0 0 6px rgba(79,126,255,0.2) !important;
+}
+
+/* 카드 몸통을 0.3초 누르고 있어 이동 가능 상태가 됐을 때 표시 */
+.mm-move-ready {
+  border-color: var(--red) !important;
+  box-shadow: 0 0 0 3px rgba(255,70,85,0.55) !important;
+  transform: scale(1.02);
+  transition: box-shadow 0.15s, transform 0.15s, border-color 0.15s;
 }
 
 /* Move-to-category button on standalone stock */
@@ -2624,6 +2678,11 @@ main {
 
   .card { padding: 14px; }
 
+  /* ── 종목별 그래프(스파크라인) ── */
+  .scv-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .scv-card { padding: 10px; }
+  .scv-chart-wrap { height: 44px; }
+
   /* ── Sector chart section margin ── */
   .sector-chart-section { margin-bottom: 14px; }
 
@@ -2726,4 +2785,181 @@ main {
   .gv-lr { font-size: 0.75rem; }
   .gv-ln { font-size: 0.67rem; }
   .gv-invest-title { font-size: 0.82rem; }
+}
+
+/* ─── 피드백 게시판 ─── */
+.feedback-view {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.feedback-view.hidden { display: none; }
+
+.fb-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.fb-title { font-weight: 700; font-size: 1rem; color: var(--text); }
+
+.fb-write {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  max-width: 900px;
+  width: 100%;
+  margin: 20px auto 0;
+  padding: 0 16px;
+}
+
+.fb-textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 60px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 0.88rem;
+  font-family: inherit;
+}
+.fb-textarea:focus { border-color: var(--accent); outline: none; }
+.fb-textarea::placeholder { color: var(--muted); }
+
+.fb-submit-btn {
+  padding: 10px 18px;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fb-submit-btn:hover { opacity: 0.9; }
+
+.fb-filter {
+  display: flex;
+  gap: 6px;
+  max-width: 900px;
+  width: 100%;
+  margin: 16px auto 0;
+  padding: 0 16px;
+}
+
+.fb-fbtn {
+  padding: 5px 14px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.fb-fbtn:hover { color: var(--text); border-color: var(--text); }
+.fb-fbtn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.fb-list {
+  max-width: 900px;
+  width: 100%;
+  margin: 14px auto 40px;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fb-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 40px 0;
+  font-size: 0.88rem;
+}
+
+.fb-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.fb-item.done { opacity: 0.6; }
+
+.fb-item-main { flex: 1; min-width: 0; }
+
+.fb-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.fb-status-badge.pending { background: rgba(255, 70, 85, 0.14); color: var(--red); }
+.fb-status-badge.done    { background: rgba(0, 209, 122, 0.14); color: var(--green); }
+
+.fb-content {
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fb-item-side {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.fb-date { color: var(--muted); font-size: 0.72rem; white-space: nowrap; }
+
+.fb-toggle-btn {
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fb-toggle-btn:hover { color: var(--text); border-color: var(--text); }
+
+.fb-del-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.fb-del-btn:hover { color: var(--red); }
+
+@media (max-width: 768px) {
+  .fb-write { flex-direction: column; }
+  .fb-submit-btn { align-self: flex-end; }
+  .fb-item { flex-direction: column; }
+  .fb-item-side { flex-direction: row; align-items: center; width: 100%; justify-content: space-between; }
 }
