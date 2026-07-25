@@ -86,6 +86,7 @@ function hideAllViews() {
   document.getElementById('macroAnalysisView').classList.add('hidden');
   document.getElementById('mindmapView').classList.add('hidden');
   document.getElementById('feedbackView').classList.add('hidden');
+  document.getElementById('dashboardBtn').classList.remove('active');
   document.getElementById('graphViewBtn').classList.remove('active');
   document.getElementById('stockChartsViewBtn').classList.remove('active');
   document.getElementById('macroAnalysisBtn').classList.remove('active');
@@ -140,7 +141,6 @@ async function initChartHeightBtns() {
 
 function initGraphView() {
   document.getElementById('graphViewBtn').addEventListener('click', toggleGraphView);
-  document.getElementById('graphBackBtn').addEventListener('click', hideAllViews);
   initChartHeightBtns();
   document.querySelectorAll('.gv-pbtn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -239,7 +239,6 @@ function toggleGraphView() {
 // ─── 종목별 그래프 뷰 ─────────────────────────────────────────
 function initStockChartsView() {
   document.getElementById('stockChartsViewBtn').addEventListener('click', toggleStockChartsView);
-  document.getElementById('stockChartsBackBtn').addEventListener('click', hideAllViews);
   document.querySelectorAll('.scv-pbtn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.scv-pbtn').forEach(b => b.classList.remove('active'));
@@ -597,15 +596,6 @@ async function loadSectorChart(period = '1y') {
 }
 
 function initSectorChartToggle() {
-  const toggle = document.getElementById('sectorChartToggle');
-  const body   = document.getElementById('sectorChartBody');
-  if (!toggle) return;
-
-  toggle.addEventListener('click', () => {
-    const collapsed = body.classList.toggle('hidden');
-    toggle.querySelector('.scs-arrow').textContent = collapsed ? '▸' : '▾';
-  });
-
   document.querySelectorAll('.scs-pbtn').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
@@ -883,6 +873,54 @@ function addTouchDrag(container, itemSel, handleSel, onDrop, { hScroll = false }
   };
   container.addEventListener('touchend',    cleanup, { passive: true });
   container.addEventListener('touchcancel', cleanup, { passive: true });
+}
+
+function initSectorCollapseAllBtn() {
+  const btn = document.getElementById('sectorCollapseAllBtn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    const groups = document.querySelectorAll('.sector-group');
+    if (!groups.length) return;
+    const allCollapsed = [...groups].every(g => g.classList.contains('collapsed'));
+    groups.forEach(g => {
+      g.classList.toggle('collapsed', !allCollapsed);
+      const arrow = g.querySelector('.sg-toggle');
+      if (arrow) arrow.textContent = !allCollapsed ? '▸' : '▾';
+    });
+  });
+}
+
+function initTopBarsToggle() {
+  const toggle  = document.getElementById('topBarsToggle');
+  const arrow   = document.getElementById('topBarsArrow');
+  const targets = ['.index-bar', '.macro-section', '.sector-bar']
+    .map(sel => document.querySelector(sel))
+    .filter(Boolean);
+  if (!toggle) return;
+
+  let collapsed = false;
+  const apply = () => {
+    targets.forEach(el => el.classList.toggle('hidden', collapsed));
+    if (arrow) arrow.textContent = collapsed ? '▸' : '▾';
+  };
+
+  (async () => {
+    try {
+      const res = await fetch('/api/db/settings/topBarsCollapsed');
+      if (res.ok) collapsed = (await res.json()).value === '1';
+    } catch {}
+    apply();
+  })();
+
+  toggle.addEventListener('click', () => {
+    collapsed = !collapsed;
+    apply();
+    fetch('/api/db/settings/topBarsCollapsed', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: collapsed ? '1' : '0' }),
+    }).catch(() => {});
+  });
 }
 
 function initMacroSection() {
@@ -1283,16 +1321,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadIndexOrderFromDB();
   await loadMacroIndicatorsFromDB();
 
+  document.getElementById('dashboardBtn').addEventListener('click', () => {
+    hideAllViews();
+    document.getElementById('dashboardBtn').classList.add('active');
+  });
   initGraphView();
   initStockChartsView();
   initMacroAnalysisView();
   await initMindmap();
   initFeedback();
-  initSectorChartToggle();
-  loadSectorChart();
   initIndexBar();
   initSectorBar();
   initMacroSection();
+  initTopBarsToggle();
+  initSectorCollapseAllBtn();
   renderGrid();
   addTouchDrag(document.getElementById('grid'), '.card', null, (dragged, target) => {
     if (dragged.parentElement !== target.parentElement) return;
@@ -1343,6 +1385,10 @@ function updateTimerLabel() {
 document.getElementById('refreshBtn').addEventListener('click', () => {
   fetchAllPrices();
   startCountdown();
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.remove('spinning');
+  void btn.offsetWidth; // 애니메이션 재시작을 위한 리플로우 강제
+  btn.classList.add('spinning');
 });
 
 // ─── Fetch prices ────────────────────────────────────────
@@ -1676,7 +1722,7 @@ function renderCardPE(card, val, price, currency) {
 }
 
 const PERF_LABELS = [
-  { key: '5d',  label: '5일' },
+  { key: '7d',  label: '7일' },
   { key: '1mo', label: '1달' },
   { key: '3mo', label: '3달' },
   { key: '6mo', label: '6달' },
@@ -1748,16 +1794,19 @@ function formatPrice(val, currency) {
 
 // ─── Grid rendering ──────────────────────────────────────
 function renderGrid() {
-  const grid  = document.getElementById('grid');
-  const empty = document.getElementById('empty');
+  const grid    = document.getElementById('grid');
+  const empty   = document.getElementById('empty');
+  const toolbar = document.querySelector('.grid-toolbar');
 
   grid.innerHTML = '';
 
   if (stocks.length === 0) {
     empty.style.display = '';
+    if (toolbar) toolbar.classList.add('hidden');
     return;
   }
   empty.style.display = 'none';
+  if (toolbar) toolbar.classList.remove('hidden');
 
   // 섹터별 그룹화
   const grouped = new Map(); // sector_etf → stocks[]
@@ -2149,7 +2198,7 @@ function heatColor(ret) {
 
 function initMacroAnalysisView() {
   document.getElementById('macroAnalysisBtn').addEventListener('click', toggleMacroAnalysisView);
-  document.getElementById('macroAnalysisBackBtn').addEventListener('click', hideAllViews);
+  initSectorChartToggle();
 
   // 저장된 섹션 순서 복원 (DB 우선, fallback: localStorage)
   const view = document.getElementById('macroAnalysisView');
@@ -2243,6 +2292,7 @@ function toggleMacroAnalysisView() {
     document.getElementById('macroAnalysisBtn').classList.add('active');
     loadYieldCurve();
     loadSectorHeatmap();
+    loadSectorChart();
     loadRelativeStrength();
     loadVixChart();
     loadIsmPmiChart();
@@ -3397,12 +3447,14 @@ function mmApplyTransform() {
   if (lbl) lbl.textContent = Math.round(mmTx.z * 100) + '%';
 }
 
+const MM_INITIAL_ZOOM = 0.15;
+
 function mmResetView() {
   const vp = document.getElementById('mmViewport');
   if (!vp) return;
-  mmTx.x = vp.clientWidth  / 2 - MM_CANVAS_SIZE / 2;
-  mmTx.y = vp.clientHeight / 2 - MM_CANVAS_SIZE / 2;
-  mmTx.z = 1;
+  mmTx.z = MM_INITIAL_ZOOM;
+  mmTx.x = vp.clientWidth  / 2 - (MM_CANVAS_SIZE / 2) * mmTx.z;
+  mmTx.y = vp.clientHeight / 2 - (MM_CANVAS_SIZE / 2) * mmTx.z;
   mmApplyTransform();
 }
 
@@ -4393,6 +4445,7 @@ function mmInitTouch() {
 async function initMindmap() {
   await mmLoad();
 
+  document.getElementById('mmBackBtn').addEventListener('click', hideAllViews);
   document.getElementById('mindmapBtn').addEventListener('click', () => {
     const showing = !document.getElementById('mindmapView').classList.contains('hidden');
     hideAllViews();
@@ -4404,7 +4457,6 @@ async function initMindmap() {
     }
   });
 
-  document.getElementById('mmBackBtn').addEventListener('click', hideAllViews);
 
   document.getElementById('mmAddCatBtn').addEventListener('click', async () => {
     const name = (prompt('분류 이름을 입력하세요:') ?? '').trim();
@@ -4588,6 +4640,7 @@ function fbRender() {
 }
 
 function initFeedback() {
+  document.getElementById('feedbackBackBtn').addEventListener('click', hideAllViews);
   document.getElementById('feedbackBtn').addEventListener('click', () => {
     const showing = !document.getElementById('feedbackView').classList.contains('hidden');
     hideAllViews();
@@ -4599,7 +4652,6 @@ function initFeedback() {
     }
   });
 
-  document.getElementById('feedbackBackBtn').addEventListener('click', hideAllViews);
 
   document.getElementById('fbSubmitBtn').addEventListener('click', async () => {
     const input = document.getElementById('fbInput');

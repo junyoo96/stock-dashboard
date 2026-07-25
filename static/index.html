@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=69" />
+  <link rel="stylesheet" href="style.css?v=75" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -16,23 +16,38 @@
     <header>
       <div class="header-inner">
         <div class="header-left">
-          <span class="logo">주식 대시보드</span>
-          <button id="graphViewBtn" class="graph-btn">과거분석</button>
-          <button id="stockChartsViewBtn" class="graph-btn">종목별 그래프</button>
-          <button id="macroAnalysisBtn" class="graph-btn">거시경제 분석</button>
-          <button id="mindmapBtn" class="graph-btn">마인드맵</button>
-          <button id="feedbackBtn" class="graph-btn">피드백</button>
-        </div>
-        <div class="search-wrap">
-          <input id="searchInput" type="text" placeholder="종목 검색 (예: AAPL, 삼성전자, 005930.KS)..." autocomplete="off" />
-          <div id="searchDropdown" class="dropdown hidden"></div>
+          <div class="logo-row">
+            <span class="logo">주식 대시보드</span>
+            <button id="refreshBtn" class="refresh-icon-btn" title="새로고침" aria-label="새로고침">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <polyline points="1 20 1 14 7 14"></polyline>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+            </button>
+            <div class="search-wrap">
+              <input id="searchInput" type="text" placeholder="종목 검색 (예: AAPL, 삼성전자, 005930.KS)..." autocomplete="off" />
+              <div id="searchDropdown" class="dropdown hidden"></div>
+            </div>
+          </div>
+          <div class="header-menu">
+            <button id="dashboardBtn" class="graph-btn active">보유종목</button>
+            <button id="graphViewBtn" class="graph-btn">과거분석</button>
+            <button id="stockChartsViewBtn" class="graph-btn">종목별 그래프</button>
+            <button id="macroAnalysisBtn" class="graph-btn">거시경제 분석</button>
+            <button id="mindmapBtn" class="graph-btn">마인드맵</button>
+            <button id="feedbackBtn" class="graph-btn">피드백</button>
+          </div>
         </div>
         <div class="ctrl">
           <span id="timerLabel" class="timer-label">60초 후 갱신</span>
-          <button id="refreshBtn">새로고침</button>
         </div>
       </div>
     </header>
+    <div class="top-bars-toggle" id="topBarsToggle">
+      <span id="topBarsArrow" class="tbt-arrow">▾</span>
+      <span class="tbt-label">지수 · 거시경제 지표 · 섹터 수익률</span>
+    </div>
     <div class="index-bar">
       <div id="indexRow" class="index-row"></div>
     </div>
@@ -56,36 +71,15 @@
   </div>
 
   <main>
-    <div class="sector-chart-section">
-      <div class="scs-header" id="sectorChartToggle">
-        <span class="scs-title">섹터 ETF 수익률 추이 <span class="scs-sub">(기준=0%)</span></span>
-        <div class="scs-periods">
-          <button class="scs-pbtn" data-p="1d">1일</button>
-          <button class="scs-pbtn" data-p="5d">7일</button>
-          <button class="scs-pbtn" data-p="1mo">1개월</button>
-          <button class="scs-pbtn" data-p="3mo">3개월</button>
-          <button class="scs-pbtn" data-p="6mo">6개월</button>
-          <button class="scs-pbtn active" data-p="1y">1년</button>
-          <button class="scs-pbtn" data-p="3y">3년</button>
-          <button class="scs-pbtn" data-p="5y">5년</button>
-        </div>
-        <span class="scs-arrow">▾</span>
-      </div>
-      <div class="scs-body" id="sectorChartBody">
-        <div class="scs-chart-wrap">
-          <canvas id="sectorChartCanvas"></canvas>
-        </div>
-        <div id="sectorChartLegend" class="scs-legend"></div>
-      </div>
+    <div class="grid-toolbar">
+      <button id="sectorCollapseAllBtn" class="view-back-btn">전체 접기/펼치기</button>
     </div>
-
     <div id="grid" class="grid"></div>
     <p id="empty" class="empty-hint">위 검색창에서 종목을 검색하고 추가해보세요.<br /><small>예: AAPL, TSLA, 005930.KS (삼성전자), 035720.KS (카카오)</small></p>
   </main>
 
   <div id="macroAnalysisView" class="macro-analysis-view hidden">
     <div class="gv-toolbar">
-      <button id="macroAnalysisBackBtn" class="gv-back">← 대시보드</button>
       <span class="mav-title">거시경제 분석</span>
     </div>
 
@@ -108,6 +102,29 @@
       </div>
       <div id="heatmapTable" class="hm-wrap">
         <div class="yc-loading">로딩 중...</div>
+      </div>
+    </div>
+
+    <div class="mav-section" data-section="sector-etf-trend">
+      <div class="mav-sec-header">
+        <span class="mav-drag-handle">⠿</span>
+        <span class="mav-sec-title">섹터 ETF 수익률 추이 <span class="mav-sec-sub">(기준=0%)</span></span>
+      </div>
+      <div class="scs-periods">
+        <button class="scs-pbtn" data-p="1d">1일</button>
+        <button class="scs-pbtn" data-p="5d">7일</button>
+        <button class="scs-pbtn" data-p="1mo">1개월</button>
+        <button class="scs-pbtn" data-p="3mo">3개월</button>
+        <button class="scs-pbtn" data-p="6mo">6개월</button>
+        <button class="scs-pbtn active" data-p="1y">1년</button>
+        <button class="scs-pbtn" data-p="3y">3년</button>
+        <button class="scs-pbtn" data-p="5y">5년</button>
+      </div>
+      <div class="scs-body rs-body" id="sectorChartBody">
+        <div class="scs-chart-wrap">
+          <canvas id="sectorChartCanvas"></canvas>
+        </div>
+        <div id="sectorChartLegend" class="scs-legend"></div>
       </div>
     </div>
 
@@ -160,7 +177,6 @@
 
   <div id="stockChartsView" class="stock-charts-view hidden">
     <div class="gv-toolbar">
-      <button id="stockChartsBackBtn" class="gv-back">← 대시보드</button>
       <div class="gv-periods">
         <button class="scv-pbtn active" data-p="1d">1일</button>
         <button class="scv-pbtn" data-p="5d">7일</button>
@@ -176,7 +192,6 @@
 
   <div id="graphView" class="graph-view hidden">
     <div class="gv-toolbar">
-      <button id="graphBackBtn" class="gv-back">← 대시보드</button>
       <div class="gv-periods">
         <button class="gv-pbtn" data-p="1d">1일</button>
         <button class="gv-pbtn" data-p="5d">7일</button>
@@ -223,7 +238,7 @@
 
   <div id="mindmapView" class="mindmap-view hidden">
     <div class="mm-toolbar">
-      <button id="mmBackBtn" class="gv-back">← 대시보드</button>
+      <button id="mmBackBtn" class="view-back-btn">← 메뉴</button>
       <div class="mm-toolbar-tools">
         <button id="mmAddCatBtn" class="mm-tool-btn">＋ 분류</button>
         <button id="mmConnectBtn" class="mm-tool-btn">🔗 연결</button>
@@ -249,7 +264,7 @@
 
   <div id="feedbackView" class="feedback-view hidden">
     <div class="fb-toolbar">
-      <button id="feedbackBackBtn" class="gv-back">← 대시보드</button>
+      <button id="feedbackBackBtn" class="view-back-btn">← 메뉴</button>
       <span class="fb-title">피드백 게시판</span>
     </div>
     <div class="fb-write">
@@ -286,6 +301,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=91"></script>
+  <script src="app.js?v=100"></script>
 </body>
 </html>

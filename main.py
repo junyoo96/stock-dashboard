@@ -584,7 +584,7 @@ def _fetch_performance(symbol: str) -> dict:
     tz     = hist.index.tz
     now_ts = datetime.datetime.now(tz=tz) if tz else datetime.datetime.now()
 
-    offsets = {'5d': 5, '1mo': 30, '3mo': 91, '6mo': 182, '1y': 365, '2y': 730}
+    offsets = {'5d': 5, '7d': 7, '1mo': 30, '3mo': 91, '6mo': 182, '1y': 365, '2y': 730}
     result  = {'symbol': symbol}
 
     for key, days in offsets.items():
