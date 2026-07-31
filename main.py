@@ -285,6 +285,8 @@ async def get_ath(symbol: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_CHART_INTRADAY_INTERVAL = {"1d": "5m", "5d": "15m"}
+
 def _fetch_chart(symbol: str, period: str, start: str = None, end: str = None) -> dict:
     from datetime import datetime, timedelta
     ticker = yf.Ticker(symbol)
@@ -296,18 +298,34 @@ def _fetch_chart(symbol: str, period: str, start: str = None, end: str = None) -
         hist = ticker.history(start=s)
         intraday = False
     else:
-        hist = ticker.history(period=period)
-        intraday = period in ("1d", "5d")
+        # 1일/5일은 일봉 기본 간격(interval)으로 조회하면 캔들이 1~5개뿐이라
+        # 그래프가 사실상 안 그려짐 — 분봉 간격을 명시해서 실제 일중 흐름을 표시
+        intraday = period in _CHART_INTRADAY_INTERVAL
+        interval = _CHART_INTRADAY_INTERVAL.get(period, "1d")
+        hist = ticker.history(period=period, interval=interval)
     if hist.empty:
         raise ValueError(f"차트 데이터 없음: {symbol}")
-    fmt = "%Y-%m-%dT%H:%M:%S" if intraday else "%Y-%m-%d"
-    return {
-        "dates": hist.index.strftime(fmt).tolist(),
+    if intraday:
+        # 거래소 현지시간(예: 미국 동부시간)을 시간대 정보 없이 그대로 보내면
+        # 프론트에서 new Date()가 이를 사용자 브라우저의 로컬 시간으로 잘못 해석함
+        # → UTC로 변환한 뒤 'Z'를 붙여 절대시각으로 전달해 실제 로컬시간에 맞게 표시되게 함
+        dates = hist.index.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
+    else:
+        dates = hist.index.strftime("%Y-%m-%d").tolist()
+    result = {
+        "dates": dates,
         "open":  [round(float(p), 2) for p in hist["Open"]],
         "high":  [round(float(p), 2) for p in hist["High"]],
         "low":   [round(float(p), 2) for p in hist["Low"]],
         "close": [round(float(p), 2) for p in hist["Close"]],
     }
+    if period == "1d":
+        # 1일 그래프 수익률은 "오늘 첫 봉" 대신 "전일 종가" 기준으로 계산해야
+        # 프리마켓 갭까지 포함한 실제 당일 등락률과 일치함 (대시보드 카드와 동일 기준)
+        prev = _clean_num(ticker.fast_info.regular_market_previous_close)
+        if prev is not None:
+            result["previous_close"] = round(float(prev), 2)
+    return result
 
 
 @app.get("/api/chart/{symbol}")
@@ -477,7 +495,6 @@ _SECTOR_CHART_INTERVAL = {
 def _fetch_sector_chart(period: str) -> dict:
     interval = _SECTOR_CHART_INTERVAL.get(period, '1mo')
     intraday = period in ('1d', '5d')
-    fmt = '%Y-%m-%dT%H:%M:%S' if intraday else '%Y-%m-%d'
     symbols  = ['XLRE','XLU','XLC','XLK','XLF','XLV','XLI','XLP','XLY','XLB','XLE']
     dates    = None
     series   = {}
@@ -487,7 +504,12 @@ def _fetch_sector_chart(period: str) -> dict:
             if hist.empty:
                 continue
             if dates is None:
-                dates = hist.index.strftime(fmt).tolist()
+                # 미국 거래소 현지시간을 시간대 정보 없이 보내면 프론트에서 브라우저
+                # 로컬시간으로 오인하므로, UTC 절대시각으로 변환해 전달
+                if intraday:
+                    dates = hist.index.tz_convert('UTC').strftime('%Y-%m-%dT%H:%M:%SZ').tolist()
+                else:
+                    dates = hist.index.strftime('%Y-%m-%d').tolist()
             closes = [float(c) for c in hist['Close']]
             base   = closes[0]
             if base == 0:
@@ -681,6 +703,67 @@ async def get_yield_history(period: str = "1y"):
     }
     cache_set(cache_key, data)
     return data
+
+
+_MACRO_CORR_LIMIT = {'1mo': 22, '3mo': 65, '6mo': 130, '1y': 252, '3y': 756, '5y': 1260}
+_MACRO_CORR_YF_SYMBOLS = {'WTI': 'CL=F', 'SPX': '^GSPC', 'NASDAQ': '^IXIC'}
+
+
+def _fetch_yf_daily_closes(symbol: str, period: str) -> list:
+    try:
+        hist = yf.Ticker(symbol).history(period=period, interval='1d')
+        if hist.empty:
+            return []
+        return [{'t': d.strftime('%Y-%m-%d'), 'v': float(c)} for d, c in zip(hist.index, hist['Close'])]
+    except Exception:
+        return []
+
+
+async def _fetch_macro_correlation(period: str) -> dict:
+    limit = _MACRO_CORR_LIMIT.get(period, 252)
+    loop = asyncio.get_running_loop()
+
+    fred_tasks = [_fetch_fred_series('DGS2', limit), _fetch_fred_series('DGS10', limit)]
+    yf_tasks = [
+        loop.run_in_executor(executor, _fetch_yf_daily_closes, sym, period)
+        for sym in _MACRO_CORR_YF_SYMBOLS.values()
+    ]
+    results = await asyncio.gather(*fred_tasks, *yf_tasks, return_exceptions=True)
+
+    keys = ['DGS2', 'DGS10', *_MACRO_CORR_YF_SYMBOLS.keys()]
+    raw = {
+        key: (r if not isinstance(r, Exception) else [])
+        for key, r in zip(keys, results)
+    }
+    maps = {key: {row['t']: row['v'] for row in rows} for key, rows in raw.items()}
+    non_empty = [m for m in maps.values() if m]
+    if len(non_empty) < len(maps):
+        return {'dates': [], 'series': {}}
+
+    common = sorted(set.intersection(*[set(m.keys()) for m in maps.values()]))[-limit:]
+    if not common:
+        return {'dates': [], 'series': {}}
+
+    # 소형 차트 그리드에서 각자 고유 단위/축으로 그리므로 정규화 없이 원본값 반환
+    series = {key: [round(m[d], 4) for d in common] for key, m in maps.items()}
+
+    return {'dates': common, 'series': series}
+
+
+@app.get("/api/macro-correlation")
+async def get_macro_correlation(period: str = '1y'):
+    if period not in _MACRO_CORR_LIMIT:
+        period = '1y'
+    cache_key = f"macro-corr:{period}"
+    cached = cache_get(cache_key, 3600)
+    if cached is not None:
+        return cached
+    try:
+        result = await _fetch_macro_correlation(period)
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def _fetch_yield(symbol: str):

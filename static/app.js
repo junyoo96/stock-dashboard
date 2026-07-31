@@ -76,7 +76,7 @@ const STOCK_CHART_COLORS = [
 let graphViewChartInstance = null;
 let graphViewCurrentPeriod = '5y';
 let stockChartsInstances = {};
-let stockChartsCurrentPeriod = '1d';
+let stockChartsCurrentPeriod = '5d';
 
 // ─── 공통: 모든 뷰 숨기고 대시보드 복원 ─────────────────────────
 function hideAllViews() {
@@ -302,7 +302,8 @@ async function loadStockChartsView(period) {
       const data = await res.json();
       if (!data.close?.length) throw new Error();
 
-      const first = data.close[0];
+      // 1일 그래프는 전일 종가 기준(프리마켓 갭 포함, 대시보드 카드와 동일 기준)으로 계산
+      const first = data.previous_close ?? data.close[0];
       const last  = data.close[data.close.length - 1];
       const ret   = (last - first) / first * 100;
       const sign  = ret >= 0 ? '+' : '';
@@ -395,7 +396,8 @@ async function loadGraphView(period, start = null, end = null) {
   }
 
   const datasets = valid.map(({ symbol, data }, i) => {
-    const base = data.close[0];
+    // 1일 그래프는 전일 종가 기준(프리마켓 갭 포함, 대시보드 카드와 동일 기준)으로 계산
+    const base = data.previous_close ?? data.close[0];
     return {
       label: symbol,
       data: data.dates.map((d, j) => ({
@@ -464,7 +466,7 @@ async function loadGraphView(period, start = null, end = null) {
   _graphReturns.clear();
 
   const legendItems = valid.map(({ symbol, name, data }, i) => {
-    const first = data.close[0];
+    const first = data.previous_close ?? data.close[0];
     const last  = data.close[data.close.length - 1];
     const ret   = first > 0 ? (last - first) / first * 100 : 0;
     const color = STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length];
@@ -602,6 +604,220 @@ function initSectorChartToggle() {
       document.querySelectorAll('.scs-pbtn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       loadSectorChart(btn.dataset.p);
+    });
+  });
+}
+
+// ─── 국채금리·원유·주요지수 상관관계 ──────────────────────────
+const MACRO_CORR_SERIES = [
+  { key: 'DGS2',   label: '미국 2년 국채', color: '#69db7c' },
+  { key: 'DGS10',  label: '미국 10년 국채', color: '#ff6b6b' },
+  { key: 'WTI',    label: 'WTI 원유',       color: '#f59e0b' },
+  { key: 'SPX',    label: 'S&P 500',        color: '#4f7eff' },
+  { key: 'NASDAQ', label: '나스닥',         color: '#cc5de8' },
+];
+
+let macroCorrChartInstances = {};
+let macroCorrHeight = 110;
+
+async function loadMacroCorrelationChart(period = '1y') {
+  const res = await fetch(`/api/macro-correlation?period=${period}`);
+  if (!res.ok) return;
+  const { dates, series } = await res.json();
+  if (!dates.length) return;
+
+  const grid = document.getElementById('macroCorrGrid');
+  if (!grid) return;
+
+  Object.values(macroCorrChartInstances).forEach(c => c?.destroy());
+  macroCorrChartInstances = {};
+
+  const active = MACRO_CORR_SERIES.filter(s => series[s.key]);
+
+  grid.innerHTML = active.map(s => `
+    <div class="mc-panel">
+      <div class="mc-panel-head">
+        <span class="mc-panel-dot" style="background:${s.color}"></span>
+        <span class="mc-panel-title">${s.label}</span>
+        <span class="mc-panel-val" id="mcVal-${s.key}"></span>
+      </div>
+      <div class="mc-panel-chart" style="height:${macroCorrHeight}px">
+        <canvas id="mcCanvas-${s.key}"></canvas>
+      </div>
+    </div>
+  `).join('');
+
+  const macroCorrCrosshair = {
+    id: 'macroCorrCrosshair',
+    afterDraw(chart) {
+      const idx = chart.$mcHoverIndex;
+      if (idx == null) return;
+      const point = chart.getDatasetMeta(0).data[idx];
+      if (!point) return;
+      const { ctx: c, chartArea } = chart;
+      c.save();
+      c.beginPath();
+      c.moveTo(point.x, chartArea.top);
+      c.lineTo(point.x, chartArea.bottom);
+      c.lineWidth = 1;
+      c.strokeStyle = 'rgba(255,255,255,0.35)';
+      c.setLineDash([4, 4]);
+      c.stroke();
+      c.restore();
+    },
+  };
+
+  function syncMacroCorrHover(index) {
+    Object.values(macroCorrChartInstances).forEach(chart => {
+      if (!chart) return;
+      chart.$mcHoverIndex = index;
+      if (index == null) {
+        chart.setActiveElements([]);
+        chart.tooltip?.setActiveElements([], { x: 0, y: 0 });
+      } else {
+        const point = chart.getDatasetMeta(0).data[index];
+        if (point) {
+          chart.setActiveElements([{ datasetIndex: 0, index }]);
+          chart.tooltip.setActiveElements([{ datasetIndex: 0, index }], { x: point.x, y: point.y });
+        }
+      }
+      chart.update('none');
+    });
+  }
+
+  active.forEach((s, i) => {
+    const vals   = series[s.key];
+    const isLast = i === active.length - 1;
+    const first  = vals[0];
+    const last   = vals[vals.length - 1];
+    const chg    = first !== 0 ? (last - first) / Math.abs(first) * 100 : 0;
+    const sign   = chg >= 0 ? '+' : '';
+    const state  = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+    const valEl  = document.getElementById(`mcVal-${s.key}`);
+    if (valEl) {
+      valEl.textContent = `${sign}${chg.toFixed(1)}%`;
+      valEl.classList.add(state);
+    }
+
+    const ctx = document.getElementById(`mcCanvas-${s.key}`);
+    if (!ctx) return;
+
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        datasets: [{
+          data: dates.map((d, j) => ({ x: new Date(d).getTime(), y: vals[j] })),
+          borderColor: s.color,
+          backgroundColor: 'transparent',
+          borderWidth: 1.6,
+          pointRadius: 0,
+          tension: 0.25,
+          fill: false,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            displayColors: false,
+            padding: 4,
+            titleFont: { size: 9 },
+            bodyFont: { size: 9 },
+            titleMarginBottom: 2,
+            callbacks: {
+              title: items => {
+                const d = new Date(items[0].parsed.x);
+                return d.toLocaleDateString('ko-KR', { year: '2-digit', month: '2-digit', day: '2-digit' }).replace(/\s/g, '');
+              },
+              label: c => `${s.label}: ${c.parsed.y.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: 'timeseries',
+            grid: { color: '#252836' },
+            ticks: {
+              display: isLast,
+              color: '#7b7f97', maxTicksLimit: 8, font: { size: 9 },
+            },
+            time: {
+              displayFormats: {
+                day:   'yy.MM.dd',
+                week:  'yy.MM.dd',
+                month: 'yyyy.MM',
+                year:  'yyyy',
+              },
+            },
+          },
+          y: {
+            position: 'right',
+            grid: { color: '#252836' },
+            ticks: { color: '#7b7f97', font: { size: 9 }, maxTicksLimit: 4 },
+          },
+        },
+      },
+      plugins: [macroCorrCrosshair],
+    });
+
+    const handleMcHover = e => {
+      const points = chart.getElementsAtEventForMode(e, 'index', { intersect: false }, false);
+      if (points.length) syncMacroCorrHover(points[0].index);
+    };
+    ctx.addEventListener('mousemove', handleMcHover);
+    ctx.addEventListener('mouseleave', () => syncMacroCorrHover(null));
+    // 터치 드래그로도 크로스헤어 동기화 (모바일)
+    ctx.addEventListener('touchstart', handleMcHover, { passive: true });
+    ctx.addEventListener('touchmove', e => { e.preventDefault(); handleMcHover(e); }, { passive: false });
+    ctx.addEventListener('touchend', () => syncMacroCorrHover(null));
+    ctx.addEventListener('touchcancel', () => syncMacroCorrHover(null));
+
+    macroCorrChartInstances[s.key] = chart;
+  });
+}
+
+function initMacroCorrChartToggle() {
+  document.querySelectorAll('.mc-pbtn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      document.querySelectorAll('.mc-pbtn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadMacroCorrelationChart(btn.dataset.p);
+    });
+  });
+}
+
+async function initMacroCorrHeightBtns() {
+  try {
+    const res = await fetch('/api/db/settings/macroCorrChartHeight');
+    if (res.ok) {
+      const d = await res.json();
+      if (d.value) {
+        macroCorrHeight = parseInt(d.value, 10);
+        document.querySelectorAll('.mc-hbtn').forEach(b => b.classList.remove('active'));
+        document.querySelector(`.mc-hbtn[data-h="${macroCorrHeight}"]`)?.classList.add('active');
+      }
+    }
+  } catch {}
+
+  document.querySelectorAll('.mc-hbtn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      macroCorrHeight = parseInt(btn.dataset.h, 10);
+      document.querySelectorAll('.mc-hbtn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.mc-panel-chart').forEach(el => { el.style.height = `${macroCorrHeight}px`; });
+      requestAnimationFrame(() => {
+        Object.values(macroCorrChartInstances).forEach(c => c?.resize());
+      });
+      fetch('/api/db/settings/macroCorrChartHeight', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: String(macroCorrHeight) }),
+      }).catch(() => {});
     });
   });
 }
@@ -1325,6 +1541,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     hideAllViews();
     document.getElementById('dashboardBtn').classList.add('active');
   });
+  await initHeaderMenuOrder();
   initGraphView();
   initStockChartsView();
   initMacroAnalysisView();
@@ -1401,6 +1618,71 @@ async function fetchUsdKrw() {
 
 function formatIndex(val) {
   return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+async function initHeaderMenuOrder() {
+  const menu = document.getElementById('headerMenu');
+  if (!menu) return;
+
+  try {
+    const res = await fetch('/api/db/settings/headerMenuOrder');
+    if (res.ok) {
+      const saved = JSON.parse((await res.json()).value);
+      saved.forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) menu.appendChild(btn);
+      });
+    }
+  } catch {}
+
+  function saveHeaderMenuOrder() {
+    const order = [...menu.querySelectorAll('.graph-btn')].map(b => b.id);
+    fetch('/api/db/settings/headerMenuOrder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: JSON.stringify(order) }),
+    }).catch(() => {});
+  }
+
+  let dragSrc = null;
+
+  menu.addEventListener('dragstart', e => {
+    dragSrc = e.target.closest('.graph-btn');
+    if (!dragSrc) return;
+    dragSrc.classList.add('gm-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+
+  menu.addEventListener('dragover', e => {
+    e.preventDefault();
+    const target = e.target.closest('.graph-btn');
+    menu.querySelectorAll('.graph-btn').forEach(b => b.classList.remove('gm-drag-over'));
+    if (target && target !== dragSrc) target.classList.add('gm-drag-over');
+  });
+
+  menu.addEventListener('dragleave', e => {
+    const target = e.target.closest('.graph-btn');
+    if (target) target.classList.remove('gm-drag-over');
+  });
+
+  menu.addEventListener('drop', e => {
+    e.preventDefault();
+    const target = e.target.closest('.graph-btn');
+    if (!target || !dragSrc || target === dragSrc) return;
+    target.before(dragSrc);
+    saveHeaderMenuOrder();
+    menu.querySelectorAll('.graph-btn').forEach(b => b.classList.remove('gm-drag-over'));
+  });
+
+  menu.addEventListener('dragend', () => {
+    menu.querySelectorAll('.graph-btn').forEach(b => b.classList.remove('gm-dragging', 'gm-drag-over'));
+    dragSrc = null;
+  });
+
+  addTouchDrag(menu, '.graph-btn', null, (dragged, target) => {
+    target.before(dragged);
+    saveHeaderMenuOrder();
+  }, { hScroll: true });
 }
 
 function loadIndexOrder() {
@@ -1822,12 +2104,12 @@ function renderGrid() {
 
   function makeGroup(etfSym, etfLabel, members) {
     const group = document.createElement('div');
-    group.className = 'sector-group';
+    group.className = 'sector-group collapsed';
     if (etfSym) group.dataset.etf = etfSym;
     group.innerHTML = `
       <div class="sector-group-header">
         <div class="sg-left">
-          <span class="sg-toggle">▾</span>
+          <span class="sg-toggle">▸</span>
           ${etfSym ? `<span class="sg-etf">${etfSym}</span>` : ''}
           <span class="sg-label">${etfLabel}</span>
           <span class="sg-count">${members.length}종목</span>
@@ -2199,6 +2481,8 @@ function heatColor(ret) {
 function initMacroAnalysisView() {
   document.getElementById('macroAnalysisBtn').addEventListener('click', toggleMacroAnalysisView);
   initSectorChartToggle();
+  initMacroCorrChartToggle();
+  initMacroCorrHeightBtns();
 
   // 저장된 섹션 순서 복원 (DB 우선, fallback: localStorage)
   const view = document.getElementById('macroAnalysisView');
@@ -2294,6 +2578,7 @@ function toggleMacroAnalysisView() {
     loadSectorHeatmap();
     loadSectorChart();
     loadRelativeStrength();
+    loadMacroCorrelationChart();
     loadVixChart();
     loadIsmPmiChart();
     loadLeiChart();

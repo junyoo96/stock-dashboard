@@ -221,11 +221,17 @@ header {
   transition: background 0.2s, color 0.2s;
   white-space: nowrap;
   flex-shrink: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 .graph-btn:hover, .graph-btn.active {
   background: var(--accent);
   color: #fff;
 }
+
+.graph-btn.gm-dragging { opacity: 0.35; }
+.graph-btn.gm-drag-over { box-shadow: 0 0 0 2px var(--accent-dim); }
 
 /* ─── Search ─── */
 .search-wrap {
@@ -327,7 +333,8 @@ header {
   margin-bottom: 12px;
 }
 
-.scs-pbtn {
+.scs-pbtn,
+.mc-pbtn {
   padding: 3px 10px;
   background: transparent;
   border: 1px solid var(--border);
@@ -339,7 +346,9 @@ header {
 }
 
 .scs-pbtn:hover,
-.scs-pbtn.active {
+.scs-pbtn.active,
+.mc-pbtn:hover,
+.mc-pbtn.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -404,6 +413,58 @@ header {
 .scl-ret.up   { color: var(--green); }
 .scl-ret.down { color: var(--red); }
 .scl-ret.flat { color: var(--muted); }
+
+/* ─── 국채금리·원유·주요지수 상관관계 (소형 차트 그리드) ─── */
+.mc-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.mc-panel {
+  position: relative;
+}
+.mc-panel:not(:first-child) { border-top: 1px solid var(--border); }
+
+.mc-panel-head {
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  background: rgba(22, 25, 35, 0.72);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.mc-panel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mc-panel-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mc-panel-val {
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+.mc-panel-val.up   { color: var(--green); }
+.mc-panel-val.down { color: var(--red); }
+.mc-panel-val.flat { color: var(--muted); }
+
+.mc-panel-chart {
+  position: relative;
+  height: 110px;
+}
 
 /* ─── Top Bars Toggle (지수·거시경제·섹터 일괄 접기) ─── */
 .top-bars-toggle {
@@ -865,18 +926,23 @@ main {
   flex-direction: column;
   align-items: center;
   gap: 1px;
+  min-width: 44px;
+  flex-shrink: 0;
 }
 
 .sg-pi-label {
   font-size: 0.62rem;
   color: var(--muted);
   line-height: 1.2;
+  white-space: nowrap;
 }
 
 .sg-pi-val {
   font-size: 0.78rem;
   font-weight: 600;
   line-height: 1.2;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .sg-perf-item.up   .sg-pi-val { color: var(--green); }
@@ -1300,7 +1366,8 @@ main {
   transition: height 0.25s ease;
 }
 
-.gv-height-btns {
+.gv-height-btns,
+.mc-height-btns {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1314,7 +1381,8 @@ main {
   white-space: nowrap;
 }
 
-.gv-hbtn {
+.gv-hbtn,
+.mc-hbtn {
   padding: 3px 10px;
   background: transparent;
   border: 1px solid var(--border);
@@ -1325,8 +1393,9 @@ main {
   transition: all 0.15s;
   white-space: nowrap;
 }
-.gv-hbtn:hover { color: var(--text); border-color: var(--text); }
-.gv-hbtn.active {
+.gv-hbtn:hover, .mc-hbtn:hover { color: var(--text); border-color: var(--text); }
+.gv-hbtn.active,
+.mc-hbtn.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -1808,7 +1877,7 @@ main {
 }
 
 .rs-body {
-  height: 240px;
+  height: 340px;
   padding: 0;
   margin-top: 12px;
 }
@@ -2660,6 +2729,8 @@ main {
   /* ── Sector chart ── */
   .scs-periods { flex-wrap: wrap; gap: 3px; }
 
+  .mc-panel-chart { height: 80px; }
+
   .scs-body {
     flex-direction: column;
     height: auto;
@@ -2667,7 +2738,7 @@ main {
     gap: 10px;
   }
 
-  .scs-chart-wrap { height: 200px; }
+  .scs-chart-wrap { height: 240px; }
 
   .scs-legend {
     width: 100%;
@@ -2709,7 +2780,7 @@ main {
   .gv-toolbar { flex-wrap: wrap; gap: 8px; }
   .gv-periods { flex-wrap: wrap; gap: 3px; }
   .gv-pbtn    { padding: 4px 8px; font-size: 0.78rem; }
-  .gv-height-btns { margin-left: 0; }
+  .gv-height-btns, .mc-height-btns { margin-left: 0; }
   .gv-hbtn    { padding: 4px 10px; font-size: 0.78rem; }
   .gv-date-range { flex-wrap: wrap; }
   .gv-date-input { width: 110px; font-size: 0.75rem; }
@@ -2773,8 +2844,9 @@ main {
   main { padding: 10px 8px; }
 
   /* ── Sector chart ── */
-  .scs-chart-wrap { height: 170px; }
-  .scs-pbtn { padding: 2px 7px; font-size: 0.72rem; }
+  .scs-chart-wrap { height: 200px; }
+  .scs-pbtn, .mc-pbtn { padding: 2px 7px; font-size: 0.72rem; }
+  .mc-panel-chart { height: 66px; }
 
   /* ── Sector group ── */
   .sg-label  { font-size: 0.8rem; }
@@ -2833,7 +2905,7 @@ main {
   display: flex;
   gap: 10px;
   align-items: flex-start;
-  max-width: 900px;
+  max-width: 1400px;
   width: 100%;
   margin: 20px auto 0;
   padding: 0 16px;
@@ -2870,7 +2942,7 @@ main {
 .fb-filter {
   display: flex;
   gap: 6px;
-  max-width: 900px;
+  max-width: 1400px;
   width: 100%;
   margin: 16px auto 0;
   padding: 0 16px;
@@ -2895,7 +2967,7 @@ main {
 }
 
 .fb-list {
-  max-width: 900px;
+  max-width: 1400px;
   width: 100%;
   margin: 14px auto 40px;
   padding: 0 16px;

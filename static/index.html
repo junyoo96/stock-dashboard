@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=75" />
+  <link rel="stylesheet" href="style.css?v=84" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -30,13 +30,13 @@
               <div id="searchDropdown" class="dropdown hidden"></div>
             </div>
           </div>
-          <div class="header-menu">
-            <button id="dashboardBtn" class="graph-btn active">보유종목</button>
-            <button id="graphViewBtn" class="graph-btn">과거분석</button>
-            <button id="stockChartsViewBtn" class="graph-btn">종목별 그래프</button>
-            <button id="macroAnalysisBtn" class="graph-btn">거시경제 분석</button>
-            <button id="mindmapBtn" class="graph-btn">마인드맵</button>
-            <button id="feedbackBtn" class="graph-btn">피드백</button>
+          <div class="header-menu" id="headerMenu">
+            <button id="dashboardBtn" class="graph-btn active" draggable="true">보유종목</button>
+            <button id="graphViewBtn" class="graph-btn" draggable="true">과거분석</button>
+            <button id="stockChartsViewBtn" class="graph-btn" draggable="true">종목별 그래프</button>
+            <button id="macroAnalysisBtn" class="graph-btn" draggable="true">거시경제 분석</button>
+            <button id="mindmapBtn" class="graph-btn" draggable="true">마인드맵</button>
+            <button id="feedbackBtn" class="graph-btn" draggable="true">피드백</button>
           </div>
         </div>
         <div class="ctrl">
@@ -138,6 +138,28 @@
       </div>
     </div>
 
+    <div class="mav-section" data-section="macro-correlation">
+      <div class="mav-sec-header">
+        <span class="mav-drag-handle">⠿</span>
+        <span class="mav-sec-title">국채금리·원유·주요지수 상관관계 <span class="mav-sec-sub">(각자 고유 단위, 동일 시간축)</span></span>
+      </div>
+      <div class="scs-periods">
+        <button class="mc-pbtn" data-p="1mo">1개월</button>
+        <button class="mc-pbtn" data-p="3mo">3개월</button>
+        <button class="mc-pbtn" data-p="6mo">6개월</button>
+        <button class="mc-pbtn active" data-p="1y">1년</button>
+        <button class="mc-pbtn" data-p="3y">3년</button>
+        <button class="mc-pbtn" data-p="5y">5년</button>
+        <div class="mc-height-btns">
+          <span class="gv-hb-label">높이</span>
+          <button class="mc-hbtn" data-h="70">소</button>
+          <button class="mc-hbtn active" data-h="110">중</button>
+          <button class="mc-hbtn" data-h="160">대</button>
+        </div>
+      </div>
+      <div id="macroCorrGrid" class="mc-grid"></div>
+    </div>
+
     <div class="mav-section" data-section="vix">
       <div class="mav-sec-header">
         <span class="mav-drag-handle">⠿</span>
@@ -178,8 +200,8 @@
   <div id="stockChartsView" class="stock-charts-view hidden">
     <div class="gv-toolbar">
       <div class="gv-periods">
-        <button class="scv-pbtn active" data-p="1d">1일</button>
-        <button class="scv-pbtn" data-p="5d">7일</button>
+        <button class="scv-pbtn" data-p="1d">1일</button>
+        <button class="scv-pbtn active" data-p="5d">7일</button>
         <button class="scv-pbtn" data-p="1mo">1개월</button>
         <button class="scv-pbtn" data-p="3mo">3개월</button>
         <button class="scv-pbtn" data-p="6mo">6개월</button>
@@ -301,6 +323,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=100"></script>
+  <script src="app.js?v=112"></script>
 </body>
 </html>
