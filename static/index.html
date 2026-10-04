@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=84" />
+  <link rel="stylesheet" href="style.css?v=109" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -34,8 +34,10 @@
             <button id="dashboardBtn" class="graph-btn active" draggable="true">보유종목</button>
             <button id="graphViewBtn" class="graph-btn" draggable="true">과거분석</button>
             <button id="stockChartsViewBtn" class="graph-btn" draggable="true">종목별 그래프</button>
+            <button id="stockAnalysisBtn" class="graph-btn" draggable="true">종목별분석</button>
             <button id="macroAnalysisBtn" class="graph-btn" draggable="true">거시경제 분석</button>
             <button id="mindmapBtn" class="graph-btn" draggable="true">마인드맵</button>
+            <button id="portfolioBtn" class="graph-btn" draggable="true">자산 포트폴리오</button>
             <button id="feedbackBtn" class="graph-btn" draggable="true">피드백</button>
           </div>
         </div>
@@ -212,6 +214,96 @@
     <div id="stockChartsGrid" class="scv-grid"></div>
   </div>
 
+  <div id="stockAnalysisView" class="stock-analysis-view hidden">
+    <div class="sa-toolbar">
+      <div class="sa-asof-wrap">
+        <div id="saAsOf" class="sa-asof"></div>
+        <button id="saRefreshBtn" class="refresh-icon-btn" title="새로고침" aria-label="새로고침">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="sa-collapse-toggle" id="saCollapseToggle">
+      <span class="sa-collapse-arrow" id="saCollapseArrow">▾</span>
+      <span class="sa-collapse-label">분석 요약 · 필터 · 투자성향 설정</span>
+    </div>
+
+    <div id="saCollapsibleSection">
+      <div id="saKpiRow" class="sa-kpi-row"></div>
+
+      <div class="sa-controls">
+        <div class="sa-search-wrap">
+          <input id="saSearchInput" type="text" placeholder="종목명 또는 티커로 검색..." autocomplete="off" />
+        </div>
+        <div class="sa-filter-group">
+          <select id="saCountryFilter" class="sa-select">
+            <option value="all">전체 국가</option>
+            <option value="US">미국</option>
+            <option value="KR">한국</option>
+          </select>
+          <select id="saJudgmentFilter" class="sa-select">
+            <option value="all">전체 판단</option>
+          </select>
+          <label class="sa-num-filter">종합점수 ≥ <input id="saMinScore" type="number" min="0" max="100" placeholder="0" inputmode="numeric" /></label>
+          <label class="sa-num-filter">상승여력 ≥ <input id="saMinUpside" type="number" placeholder="-100" inputmode="numeric" />%</label>
+          <button id="saResetFiltersBtn" class="sa-reset-btn">필터 초기화</button>
+          <label class="sa-only-selected">
+            <input type="checkbox" id="saOnlySelectedToggle" />
+            선택한 종목만 보기 <span id="saSelectedCountBadge" class="sa-selected-count">0</span>
+          </label>
+          <button id="saClearSelectionBtn" class="sa-reset-btn">선택 해제</button>
+        </div>
+      </div>
+
+      <div class="sa-strategy-panel">
+        <div class="sa-strategy-presets" id="saStrategyPresets"></div>
+        <div class="sa-weight-sliders" id="saWeightSliders"></div>
+      </div>
+    </div>
+
+    <div class="sa-table-wrap" id="saTableWrap">
+      <div class="yc-loading">로딩 중...</div>
+    </div>
+
+    <div class="mav-section">
+      <div class="mav-sec-header">
+        <span class="mav-sec-title">가치 · 성장 매트릭스</span>
+        <span class="mav-sec-sub">X축 가치점수 · Y축 성장점수 · 원 크기 시가총액 · 색상 퀄리티점수</span>
+      </div>
+      <div class="sa-matrix-wrap">
+        <canvas id="saMatrixCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div id="saOverlay" class="overlay hidden"></div>
+  <div id="saDetailPanel" class="sa-detail-panel hidden">
+    <div class="sa-detail-head">
+      <div class="sa-detail-title-wrap">
+        <span id="saDetailSymbol" class="sa-detail-symbol"></span>
+        <span id="saDetailName" class="sa-detail-name"></span>
+        <span id="saDetailJudgment" class="sa-judgment-badge"></span>
+      </div>
+      <button id="saDetailClose" class="close-x">✕</button>
+    </div>
+    <div id="saDetailSummary" class="sa-detail-summary"></div>
+    <div class="sa-detail-tabs" id="saDetailTabs">
+      <button class="sa-tab-btn active" data-tab="overview">종합</button>
+      <button class="sa-tab-btn" data-tab="valuation">가치평가</button>
+      <button class="sa-tab-btn" data-tab="growth">성장성</button>
+      <button class="sa-tab-btn" data-tab="quality">수익성</button>
+      <button class="sa-tab-btn" data-tab="stability">재무안정성</button>
+      <button class="sa-tab-btn" data-tab="shareholder">주주환원</button>
+      <button class="sa-tab-btn" data-tab="fairvalue">적정가</button>
+    </div>
+    <div id="saDetailBody" class="sa-detail-body"></div>
+  </div>
+
   <div id="graphView" class="graph-view hidden">
     <div class="gv-toolbar">
       <div class="gv-periods">
@@ -301,6 +393,76 @@
     <div id="fbList" class="fb-list"></div>
   </div>
 
+  <div id="portfolioView" class="portfolio-view hidden">
+    <div class="pf-toolbar">
+      <button id="portfolioBackBtn" class="view-back-btn">← 메뉴</button>
+      <span class="pf-title">자산 포트폴리오</span>
+      <span id="pfAsOf" class="pf-asof"></span>
+    </div>
+
+    <div id="pfKpiRow" class="pf-kpi-row"></div>
+
+    <div class="pf-body">
+      <div class="pf-chart-card">
+        <div class="pf-card-title">보유 비중</div>
+        <div class="pf-chart-wrap">
+          <canvas id="pfChartCanvas"></canvas>
+          <div id="pfChartEmpty" class="pf-chart-empty">보유 종목을 추가하면 비중 차트가 표시됩니다.</div>
+        </div>
+      </div>
+
+      <div class="pf-form-card">
+        <div class="pf-card-title">현금성 자산 추가</div>
+        <p class="pf-cash-form-hint">추가한 항목은 아래 표에 보유 종목과 함께 표시됩니다.</p>
+        <div class="pf-cash-form">
+          <input id="pfCashLabelInput" type="text" placeholder="항목명 (예: 생활비 통장, 달러 예금, MMF)" autocomplete="off" />
+          <div class="pf-cash-form-row">
+            <select id="pfCashCurrencySelect">
+              <option value="KRW">KRW</option>
+              <option value="USD">USD</option>
+            </select>
+            <input id="pfCashAmountInput" type="number" min="0" step="any" placeholder="금액" inputmode="decimal" />
+          </div>
+          <div class="pf-form-actions">
+            <button id="pfCashSubmitBtn" class="pf-submit-btn" disabled>추가</button>
+            <button id="pfCashCancelEditBtn" class="pf-cancel-btn hidden">취소</button>
+          </div>
+        </div>
+
+        <div class="pf-card-title pf-import-title">
+          <span>보유종목에서 가져오기</span>
+          <button id="pfImportToggleBtn" type="button" class="pf-import-toggle-btn">펼치기 ▾</button>
+        </div>
+        <div id="pfImportPanel" class="pf-import-panel hidden">
+          <div id="pfImportList" class="pf-import-list"></div>
+          <div class="pf-import-actions">
+            <span id="pfImportHint" class="pf-import-hint">수량을 입력한 종목만 추가됩니다.</span>
+            <button id="pfImportSubmitBtn" type="button" class="pf-submit-btn" disabled>선택 종목 일괄 추가</button>
+          </div>
+        </div>
+
+        <div class="pf-card-title">종목 추가 / 수정</div>
+        <div class="pf-add-form">
+          <div class="pf-search-wrap">
+            <input id="pfSearchInput" type="text" placeholder="종목 검색 (예: AAPL, 삼성전자, 005930.KS)..." autocomplete="off" />
+            <div id="pfSearchDropdown" class="dropdown hidden"></div>
+          </div>
+          <div id="pfSelectedChip" class="pf-selected-chip hidden"></div>
+          <div class="pf-form-row">
+            <label>수량<input id="pfQtyInput" type="number" min="0" step="any" placeholder="0" inputmode="decimal" /></label>
+            <label>매입단가<input id="pfPriceInput" type="number" min="0" step="any" placeholder="0" inputmode="decimal" /></label>
+          </div>
+          <div class="pf-form-actions">
+            <button id="pfSubmitBtn" class="pf-submit-btn" disabled>추가</button>
+            <button id="pfCancelEditBtn" class="pf-cancel-btn hidden">취소</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="pfTableWrap" class="pf-table-wrap sa-table-wrap"></div>
+  </div>
+
   <div id="overlay" class="overlay hidden"></div>
   <div id="modal" class="modal hidden">
     <div class="modal-head">
@@ -323,6 +485,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=112"></script>
+  <script src="app.js?v=148"></script>
 </body>
 </html>

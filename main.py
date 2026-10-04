@@ -13,6 +13,8 @@ import os
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
 
+import stock_scoring
+
 app = FastAPI()
 executor = ThreadPoolExecutor(max_workers=20)
 
@@ -49,6 +51,25 @@ def init_db():
                 completed_at TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio (
+                symbol       TEXT PRIMARY KEY,
+                name         TEXT NOT NULL,
+                currency     TEXT NOT NULL DEFAULT 'USD',
+                quantity     REAL NOT NULL,
+                avg_price    REAL NOT NULL,
+                updated_at   TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio_cash (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                label        TEXT NOT NULL,
+                currency     TEXT NOT NULL DEFAULT 'KRW',
+                amount       REAL NOT NULL,
+                updated_at   TEXT NOT NULL
+            )
+        """)
         conn.commit()
 
 init_db()
@@ -71,6 +92,18 @@ class FeedbackPayload(BaseModel):
 
 class FeedbackStatusPayload(BaseModel):
     status: str
+
+class PortfolioItem(BaseModel):
+    symbol: str
+    name: str
+    currency: str = "USD"
+    quantity: float
+    avg_price: float
+
+class PortfolioCashItem(BaseModel):
+    label: str
+    currency: str = "KRW"
+    amount: float
 
 _cache: dict = {}
 
@@ -248,6 +281,22 @@ async def get_price(symbol: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _calc_rsi(closes, period: int = 14):
+    """Wilder's RSI(14) — EWM 기반 근사(alpha=1/period)."""
+    if len(closes) < period + 1:
+        return None
+    delta = closes.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+    last_gain, last_loss = avg_gain.iloc[-1], avg_loss.iloc[-1]
+    if last_loss == 0:
+        return 100.0 if last_gain > 0 else 50.0
+    rs = last_gain / last_loss
+    return 100 - (100 / (1 + rs))
+
+
 def _fetch_ath(symbol: str) -> dict:
     ticker = yf.Ticker(symbol)
     # 최근 1년 내 최고가 기준.
@@ -260,11 +309,13 @@ def _fetch_ath(symbol: str) -> dict:
     ath = float(hist['High'].max())
     price = _clean_num(ticker.fast_info.last_price) or float(hist['Close'].iloc[-1])
     drawdown_pct = round((price - ath) / ath * 100, 2) if ath else None
+    rsi_val = _calc_rsi(hist['Close'])
     return {
         "symbol": symbol,
         "ath": round(ath, 4),
         "price": round(price, 4),
         "drawdown_pct": drawdown_pct,
+        "rsi": round(rsi_val, 1) if rsi_val is not None else None,
     }
 
 
@@ -380,29 +431,18 @@ SECTOR_ETF_MAP = {
 }
 
 
-def _fetch_valuation(symbol: str) -> dict:
-    ticker = yf.Ticker(symbol)
-    info   = ticker.info
-    t     = info.get("trailingPE")
-    f     = info.get("forwardPE")
-    bv    = info.get("bookValue")
-    price = info.get("currentPrice") or info.get("regularMarketPrice")
-    shares = info.get("sharesOutstanding")
+def _derive_trailing_pe_and_bv(ticker, info: dict, price, shares):
+    """일부 해외 종목(예: 삼성전자)은 info에 trailingPE/bookValue가 비어 있어
+    분기 재무제표(순이익 4개 분기 합, 최근 자기자본)로 재계산한다.
+    /api/valuation 과 /api/stock-analysis 양쪽에서 공용으로 사용."""
+    t  = info.get("trailingPE")
+    bv = info.get("bookValue")
 
-    # trailingPE 없으면 trailingEps + 현재가로 계산
     if t is None and price:
         teps = info.get("trailingEps")
         if teps and float(teps) > 0:
             t = float(price) / float(teps)
 
-    # forwardPE 없으면 forwardEps + 현재가로 계산
-    if f is None and price:
-        feps = info.get("forwardEps")
-        if feps and float(feps) > 0:
-            f = float(price) / float(feps)
-
-    # 일부 해외 종목(예: 삼성전자)은 info에 trailingPE/bookValue가 비어 있어
-    # 분기 재무제표(순이익 4개 분기 합, 최근 자기자본)로 재계산
     if (t is None or bv is None) and shares:
         if t is None and price:
             try:
@@ -424,6 +464,24 @@ def _fetch_valuation(symbol: str) -> dict:
                         bv = equity.iloc[0] / shares
             except Exception:
                 pass
+
+    return t, bv
+
+
+def _fetch_valuation(symbol: str) -> dict:
+    ticker = yf.Ticker(symbol)
+    info   = ticker.info
+    f     = info.get("forwardPE")
+    price = info.get("currentPrice") or info.get("regularMarketPrice")
+    shares = info.get("sharesOutstanding")
+
+    t, bv = _derive_trailing_pe_and_bv(ticker, info, price, shares)
+
+    # forwardPE 없으면 forwardEps + 현재가로 계산
+    if f is None and price:
+        feps = info.get("forwardEps")
+        if feps and float(feps) > 0:
+            f = float(price) / float(feps)
 
     sector     = info.get("sector")
     sector_etf = SECTOR_ETF_MAP.get(sector) if sector else None
@@ -447,6 +505,232 @@ async def get_valuation(symbol: str):
     try:
         result = await loop.run_in_executor(executor, _fetch_valuation, symbol)
         cache_set(f"val:{symbol}", result)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── 종목별분석 ───────────────────────────────────────────────
+def _pct(v):
+    v = _clean_num(v)
+    return round(v * 100, 2) if v is not None else None
+
+
+def _fetch_stock_analysis(symbol: str) -> dict:
+    ticker = yf.Ticker(symbol)
+    info   = ticker.info
+
+    name        = info.get("longName") or info.get("shortName") or symbol
+    currency    = info.get("currency") or "USD"
+    sector      = info.get("sector")
+    sector_etf  = SECTOR_ETF_MAP.get(sector) if sector else None
+    quote_type  = info.get("quoteType")
+    # ETF·펀드는 PBR 등 개별 종목용 밸류에이션 지표가 우연히 채워져 있어도
+    # 기업 재무점수 산정 대상이 아니므로 점수·적정가 계산에서 제외
+    is_company  = quote_type in (None, "EQUITY")
+
+    price      = _clean_num(info.get("currentPrice") or info.get("regularMarketPrice"))
+    prev_close = _clean_num(info.get("previousClose") or info.get("regularMarketPreviousClose"))
+    change_pct = round((price - prev_close) / prev_close * 100, 2) if price and prev_close else None
+
+    shares       = info.get("sharesOutstanding")
+    forward_pe   = _clean_num(info.get("forwardPE"))
+    trailing_eps = _clean_num(info.get("trailingEps"))
+    forward_eps  = _clean_num(info.get("forwardEps"))
+    market_cap   = _clean_num(info.get("marketCap"))
+
+    trailing_pe, book_value = _derive_trailing_pe_and_bv(ticker, info, price, shares)
+    trailing_pe = _clean_num(trailing_pe)
+    book_value  = _clean_num(book_value)
+
+    if forward_pe is None and price and forward_eps and forward_eps > 0:
+        forward_pe = price / forward_eps
+
+    # PEG: yfinance 제공값을 우선 쓰고, 없으면 Forward PER 대비 EPS 성장률로 직접 계산
+    peg = _clean_num(info.get("pegRatio"))
+    if peg is None:
+        peg = _clean_num(info.get("trailingPegRatio"))
+    if peg is None and forward_pe and trailing_eps and forward_eps and trailing_eps > 0:
+        fwd_growth_pct = (forward_eps - trailing_eps) / trailing_eps * 100
+        if fwd_growth_pct > 0:
+            peg = forward_pe / fwd_growth_pct
+
+    pb = _clean_num(info.get("priceToBook"))
+    if pb is None and price and book_value and book_value > 0:
+        pb = price / book_value
+
+    ps        = _clean_num(info.get("priceToSalesTrailing12Months"))
+    ev_ebitda = _clean_num(info.get("enterpriseToEbitda"))
+
+    free_cashflow = _clean_num(info.get("freeCashflow"))
+    total_revenue = _clean_num(info.get("totalRevenue"))
+    total_debt    = _clean_num(info.get("totalDebt"))
+    total_cash    = _clean_num(info.get("totalCash"))
+    ebitda        = _clean_num(info.get("ebitda"))
+
+    fcf_yield  = round(free_cashflow / market_cap * 100, 2) if free_cashflow is not None and market_cap else None
+    fcf_margin = round(free_cashflow / total_revenue * 100, 2) if free_cashflow is not None and total_revenue else None
+    net_debt   = (total_debt - total_cash) if total_debt is not None and total_cash is not None else None
+    net_debt_to_ebitda = round(net_debt / ebitda, 2) if net_debt is not None and ebitda else None
+
+    revenue_growth  = _pct(info.get("revenueGrowth"))
+    earnings_growth = _pct(info.get("earningsGrowth"))
+    forward_eps_growth = None
+    if trailing_eps and forward_eps and trailing_eps > 0:
+        forward_eps_growth = round((forward_eps - trailing_eps) / trailing_eps * 100, 2)
+
+    gross_margin     = _pct(info.get("grossMargins"))
+    operating_margin = _pct(info.get("operatingMargins"))
+    net_margin       = _pct(info.get("profitMargins"))
+    roe              = _pct(info.get("returnOnEquity"))
+    roa              = _pct(info.get("returnOnAssets"))
+
+    debt_to_equity = _clean_num(info.get("debtToEquity"))
+    current_ratio  = _clean_num(info.get("currentRatio"))
+    quick_ratio    = _clean_num(info.get("quickRatio"))
+
+    # dividendYield는 이미 %단위(예: 2.4 = 2.4%)로 내려오는 반면 payoutRatio는 소수(0.62=62%)라
+    # 서로 변환 방식이 다름 — 실측값으로 확인한 yfinance 응답 형식 기준
+    dividend_yield = _clean_num(info.get("dividendYield"))
+    payout_ratio   = _pct(info.get("payoutRatio"))
+
+    target_mean    = _clean_num(info.get("targetMeanPrice"))
+    target_low     = _clean_num(info.get("targetLowPrice"))
+    target_high    = _clean_num(info.get("targetHighPrice"))
+    num_analysts   = info.get("numberOfAnalystOpinions")
+    recommendation = info.get("recommendationKey")
+
+    value_metrics = {
+        "pe": trailing_pe, "forward_pe": forward_pe, "peg": peg,
+        "pb": pb, "ps": ps, "ev_ebitda": ev_ebitda, "fcf_yield": fcf_yield,
+    }
+    growth_metrics = {
+        "revenue_growth": revenue_growth, "earnings_growth": earnings_growth,
+        "forward_eps_growth": forward_eps_growth,
+    }
+    quality_metrics = {
+        "gross_margin": gross_margin, "operating_margin": operating_margin,
+        "net_margin": net_margin, "roe": roe, "roa": roa, "fcf_margin": fcf_margin,
+    }
+    stability_metrics = {
+        "debt_to_equity": debt_to_equity, "current_ratio": current_ratio,
+        "quick_ratio": quick_ratio, "net_debt_to_ebitda": net_debt_to_ebitda,
+    }
+    shareholder_metrics = {"dividend_yield": dividend_yield, "payout_ratio": payout_ratio}
+
+    if is_company:
+        value_score,       value_reasons       = stock_scoring.score_value(value_metrics)
+        growth_score,      growth_reasons      = stock_scoring.score_growth(growth_metrics)
+        quality_score,     quality_reasons     = stock_scoring.score_quality(quality_metrics)
+        stability_score,   stability_reasons   = stock_scoring.score_stability(stability_metrics)
+        shareholder_score, shareholder_reasons = stock_scoring.score_shareholder(shareholder_metrics)
+
+        positive, risk = stock_scoring.split_reasons(
+            value_reasons, growth_reasons, quality_reasons, stability_reasons, shareholder_reasons,
+        )
+
+        # Graham 계산용 EPS: trailingEps가 없는 해외 종목(예: 삼성전자)은 파생된 trailing_pe로 역산
+        graham_eps = trailing_eps
+        if graham_eps is None and price and trailing_pe and trailing_pe > 0:
+            graham_eps = price / trailing_pe
+
+        fv = stock_scoring.fair_value(
+            price, trailing_pe, forward_pe, graham_eps, book_value,
+            target_mean, target_low, target_high,
+        )
+    else:
+        value_score = growth_score = quality_score = stability_score = shareholder_score = None
+        no_data = [("ETF·펀드는 개별 기업 재무점수 산정 대상이 아닙니다.", None)]
+        value_reasons = growth_reasons = quality_reasons = stability_reasons = shareholder_reasons = no_data
+        positive, risk = [], []
+        fv = {'methods': [], 'bear': None, 'base': None, 'bull': None,
+              'upsidePercent': None, 'marginOfSafety': None}
+
+    return {
+        "symbol": symbol,
+        "name": name,
+        "sector": sector,
+        "sectorEtf": sector_etf,
+        "quoteType": quote_type,
+        "isCompany": is_company,
+        "currency": currency,
+        "price": price,
+        "previousClose": prev_close,
+        "changePercent": change_pct,
+        "marketCap": market_cap,
+        "valuation": {
+            "pe": trailing_pe, "forwardPe": forward_pe,
+            "peg": round(peg, 2) if peg is not None else None,
+            "pb": round(pb, 2) if pb is not None else None,
+            "ps": ps, "evEbitda": ev_ebitda, "fcfYield": fcf_yield,
+        },
+        "growth": {
+            "revenueGrowth": revenue_growth, "earningsGrowth": earnings_growth,
+            "forwardEpsGrowth": forward_eps_growth,
+        },
+        "profitability": {
+            "grossMargin": gross_margin, "operatingMargin": operating_margin,
+            "netMargin": net_margin, "fcfMargin": fcf_margin, "roe": roe, "roa": roa,
+        },
+        "stability": {
+            "debtToEquity": debt_to_equity, "currentRatio": current_ratio,
+            "quickRatio": quick_ratio, "netDebtToEbitda": net_debt_to_ebitda,
+        },
+        "shareholderReturn": {"dividendYield": dividend_yield, "payoutRatio": payout_ratio},
+        "scores": {
+            "value": value_score, "growth": growth_score, "quality": quality_score,
+            "stability": stability_score, "shareholderReturn": shareholder_score,
+        },
+        "scoreReasons": {
+            "value": stock_scoring.reason_texts(value_reasons),
+            "growth": stock_scoring.reason_texts(growth_reasons),
+            "quality": stock_scoring.reason_texts(quality_reasons),
+            "stability": stock_scoring.reason_texts(stability_reasons),
+            "shareholderReturn": stock_scoring.reason_texts(shareholder_reasons),
+        },
+        "fairValue": fv,
+        "analyst": {
+            "targetMean": target_mean, "targetLow": target_low, "targetHigh": target_high,
+            "numberOfAnalysts": num_analysts, "recommendation": recommendation,
+        },
+        "reasons": {"positive": positive, "risk": risk},
+    }
+
+
+@app.get("/api/stock-analysis")
+async def get_stock_analysis_all():
+    with get_db() as conn:
+        rows = conn.execute("SELECT symbol FROM stocks ORDER BY display_order").fetchall()
+    symbols = [r["symbol"] for r in rows]
+    if not symbols:
+        return []
+
+    loop = asyncio.get_running_loop()
+
+    async def load_one(sym):
+        cached = cache_get(f"analysis:{sym}", 3600)
+        if cached is not None:
+            return cached
+        try:
+            result = await loop.run_in_executor(executor, _fetch_stock_analysis, sym)
+            cache_set(f"analysis:{sym}", result)
+            return result
+        except Exception as e:
+            return {"symbol": sym, "error": True, "detail": str(e)}
+
+    return await asyncio.gather(*[load_one(s) for s in symbols])
+
+
+@app.get("/api/stock-analysis/{symbol}")
+async def get_stock_analysis_one(symbol: str):
+    symbol = symbol.upper()
+    cached = cache_get(f"analysis:{symbol}", 3600)
+    if cached is not None:
+        return cached
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(executor, _fetch_stock_analysis, symbol)
+        cache_set(f"analysis:{symbol}", result)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -500,7 +784,8 @@ def _fetch_sector_chart(period: str) -> dict:
     series   = {}
     for sym in symbols:
         try:
-            hist = yf.Ticker(sym).history(period=period, interval=interval)
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period=period, interval=interval)
             if hist.empty:
                 continue
             if dates is None:
@@ -511,8 +796,14 @@ def _fetch_sector_chart(period: str) -> dict:
                 else:
                     dates = hist.index.strftime('%Y-%m-%d').tolist()
             closes = [float(c) for c in hist['Close']]
-            base   = closes[0]
-            if base == 0:
+            if period == '1d':
+                # 1일은 다른 기간과 달리 "당일 첫 봉 대비"가 아니라 전일 정규장 종가
+                # 대비 당일 등락률이어야 함(대시보드 카드·섹터 바·섹터 히트맵과 동일 기준)
+                fi = ticker.fast_info
+                base = _clean_num(fi.regular_market_previous_close) or _clean_num(fi.previous_close)
+            else:
+                base = closes[0]
+            if not base:
                 continue
             series[sym] = [round((c / base - 1) * 100, 2) for c in closes]
         except Exception:
@@ -536,17 +827,21 @@ async def get_sector_chart(period: str = '1y'):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-_RS_PERIODS = {'1mo', '3mo', '6mo', '1y', '3y', '5y'}
+_RS_PERIODS = {'1d', '5d', '1mo', '3mo', '6mo', '1y', '3y', '5y'}
 
 def _fetch_sector_relative_strength(period: str) -> dict:
     interval = _SECTOR_CHART_INTERVAL.get(period, '1wk')
-    fmt = '%Y-%m-%d'
+    intraday = period in ('1d', '5d')
+    # 미국 거래소 현지시간을 시간대 정보 없이 보내면 프론트에서 브라우저
+    # 로컬시간으로 오인하므로, 인트라데이 구간은 UTC 절대시각으로 전달
+    fmt = '%Y-%m-%dT%H:%M:%SZ' if intraday else '%Y-%m-%d'
     symbols = ['XLRE', 'XLU', 'XLC', 'XLK', 'XLF', 'XLV', 'XLI', 'XLP', 'XLY', 'XLB', 'XLE']
 
     bench_hist = yf.Ticker('SPY').history(period=period, interval=interval)
     if bench_hist.empty:
         return {'dates': [], 'series': {}}
-    dates = bench_hist.index.strftime(fmt).tolist()
+    bench_idx = bench_hist.index.tz_convert('UTC') if intraday else bench_hist.index
+    dates = bench_idx.strftime(fmt).tolist()
     bench_map = {d: float(c) for d, c in zip(dates, bench_hist['Close'])}
 
     series = {}
@@ -555,7 +850,8 @@ def _fetch_sector_relative_strength(period: str) -> dict:
             hist = yf.Ticker(sym).history(period=period, interval=interval)
             if hist.empty:
                 continue
-            sym_map = {d: float(c) for d, c in zip(hist.index.strftime(fmt).tolist(), hist['Close'])}
+            sym_idx = hist.index.tz_convert('UTC') if intraday else hist.index
+            sym_map = {d: float(c) for d, c in zip(sym_idx.strftime(fmt).tolist(), hist['Close'])}
             base = None
             values = []
             for d in dates:
@@ -669,7 +965,47 @@ async def _fetch_fred_series(series_id: str, limit: int) -> list:
             rows.append({'t': row[0], 'v': float(row[1])})
         except ValueError:
             continue
+    # FRED DGS 시리즈는 재무부 발표보다 1영업일 늦게 반영되므로 최신 구간을 재무부 원본으로 보충
+    col = _TREASURY_COLUMNS.get(series_id)
+    if col:
+        try:
+            recent = await _fetch_treasury_recent()
+            last = rows[-1]['t'] if rows else ''
+            rows.extend({'t': d, 'v': vals[col]} for d, vals in recent if d > last and col in vals)
+        except Exception:
+            pass
     return rows[-limit:]
+
+
+_TREASURY_COLUMNS = {'DGS2': '2 Yr', 'DGS3': '3 Yr', 'DGS5': '5 Yr', 'DGS10': '10 Yr'}
+
+
+async def _fetch_treasury_recent() -> list:
+    """재무부 일별 수익률 곡선(올해분) → [(YYYY-MM-DD, {컬럼: 값})] 날짜 오름차순."""
+    cached = cache_get("treasury-yield-curve", 1800)
+    if cached is not None:
+        return cached
+    year = datetime.date.today().year
+    url = ("https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+           f"daily-treasury-rates.csv/{year}/all?type=daily_treasury_yield_curve"
+           f"&field_tdr_date_value={year}&page&_format=csv")
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True,
+                                 headers={'User-Agent': 'Mozilla/5.0'}) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+    reader = csv.reader(StringIO(resp.text))
+    header = next(reader)
+    out = []
+    for row in reader:
+        try:
+            m, d, y = row[0].split('/')
+            vals = {h: float(v) for h, v in zip(header[1:], row[1:]) if v not in ('', 'N/A')}
+        except ValueError:
+            continue
+        out.append((f"{y}-{m}-{d}", vals))
+    out.sort(key=lambda x: x[0])
+    cache_set("treasury-yield-curve", out)
+    return out
 
 
 @app.get("/api/yield-history")
@@ -794,6 +1130,19 @@ async def get_yield_curve():
 
 
 def _fetch_sector_period_return(sym: str, period: str):
+    if period == '1D':
+        # 1일은 다른 기간과 달리 "N일 전 종가 대비"가 아니라 정규장 전일 종가 대비
+        # 당일 등락률이어야 함(대시보드 카드·섹터 바와 동일 기준)
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = _clean_num(fi.last_price)
+            prev  = _clean_num(fi.regular_market_previous_close) or _clean_num(fi.previous_close)
+            if price is None or prev is None or prev == 0:
+                return None
+            return round((price - prev) / prev * 100, 2)
+        except Exception:
+            return None
+
     period_map = {'1W': '5d', '1M': '1mo', '3M': '3mo', '6M': '6mo', '1Y': '1y'}
     yf_period = period_map.get(period, '1mo')
     try:
@@ -811,7 +1160,7 @@ def _fetch_sector_period_return(sym: str, period: str):
 @app.get("/api/sector-heatmap")
 async def get_sector_heatmap():
     symbols = ['XLRE', 'XLU', 'XLC', 'XLK', 'XLF', 'XLV', 'XLI', 'XLP', 'XLY', 'XLB', 'XLE']
-    periods = ['1W', '1M', '3M', '6M', '1Y']
+    periods = ['1D', '1W', '1M', '3M', '6M', '1Y']
     cached = cache_get("sector-heatmap", 600)
     if cached is not None:
         return cached
@@ -1029,6 +1378,106 @@ def update_feedback_status(feedback_id: int, payload: FeedbackStatusPayload):
 def delete_feedback(feedback_id: int):
     with get_db() as conn:
         cur = conn.execute("DELETE FROM feedback WHERE id = ?", (feedback_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+# ─── 자산 포트폴리오 (보유 종목 수동 입력) ──────────────────────
+@app.get("/api/portfolio")
+def get_portfolio():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT symbol, name, currency, quantity, avg_price, updated_at FROM portfolio ORDER BY updated_at"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/portfolio")
+def upsert_portfolio_item(payload: PortfolioItem):
+    if payload.quantity <= 0:
+        raise HTTPException(status_code=400, detail="수량은 0보다 커야 합니다.")
+    if payload.avg_price <= 0:
+        raise HTTPException(status_code=400, detail="매입단가는 0보다 커야 합니다.")
+    symbol = payload.symbol.upper()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO portfolio (symbol, name, currency, quantity, avg_price, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(symbol) DO UPDATE SET
+                 name = excluded.name, currency = excluded.currency,
+                 quantity = excluded.quantity, avg_price = excluded.avg_price,
+                 updated_at = excluded.updated_at""",
+            (symbol, payload.name, payload.currency, payload.quantity, payload.avg_price, now),
+        )
+        conn.commit()
+    return {"symbol": symbol, "name": payload.name, "currency": payload.currency,
+            "quantity": payload.quantity, "avg_price": payload.avg_price, "updated_at": now}
+
+
+@app.delete("/api/portfolio/{symbol}")
+def delete_portfolio_item(symbol: str):
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM portfolio WHERE symbol = ?", (symbol.upper(),))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+# ─── 자산 포트폴리오: 현금성 자산 (항목별 분류 입력) ─────────────
+@app.get("/api/portfolio/cash")
+def get_portfolio_cash():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, label, currency, amount, updated_at FROM portfolio_cash ORDER BY id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/portfolio/cash")
+def create_portfolio_cash(payload: PortfolioCashItem):
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="항목명을 입력해주세요.")
+    if payload.amount <= 0:
+        raise HTTPException(status_code=400, detail="금액은 0보다 커야 합니다.")
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO portfolio_cash (label, currency, amount, updated_at) VALUES (?, ?, ?, ?)",
+            (label, payload.currency, payload.amount, now),
+        )
+        conn.commit()
+        new_id = cur.lastrowid
+    return {"id": new_id, "label": label, "currency": payload.currency, "amount": payload.amount, "updated_at": now}
+
+
+@app.put("/api/portfolio/cash/{cash_id}")
+def update_portfolio_cash(cash_id: int, payload: PortfolioCashItem):
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="항목명을 입력해주세요.")
+    if payload.amount <= 0:
+        raise HTTPException(status_code=400, detail="금액은 0보다 커야 합니다.")
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE portfolio_cash SET label = ?, currency = ?, amount = ?, updated_at = ? WHERE id = ?",
+            (label, payload.currency, payload.amount, now, cash_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Not found")
+    return {"id": cash_id, "label": label, "currency": payload.currency, "amount": payload.amount, "updated_at": now}
+
+
+@app.delete("/api/portfolio/cash/{cash_id}")
+def delete_portfolio_cash(cash_id: int):
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM portfolio_cash WHERE id = ?", (cash_id,))
         conn.commit()
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")

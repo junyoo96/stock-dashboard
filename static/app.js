@@ -83,18 +83,26 @@ function hideAllViews() {
   document.querySelector('main').classList.remove('hidden');
   document.getElementById('graphView').classList.add('hidden');
   document.getElementById('stockChartsView').classList.add('hidden');
+  document.getElementById('stockAnalysisView').classList.add('hidden');
   document.getElementById('macroAnalysisView').classList.add('hidden');
   document.getElementById('mindmapView').classList.add('hidden');
   document.getElementById('feedbackView').classList.add('hidden');
+  document.getElementById('portfolioView').classList.add('hidden');
   document.getElementById('dashboardBtn').classList.remove('active');
   document.getElementById('graphViewBtn').classList.remove('active');
   document.getElementById('stockChartsViewBtn').classList.remove('active');
+  document.getElementById('stockAnalysisBtn').classList.remove('active');
   document.getElementById('macroAnalysisBtn').classList.remove('active');
   document.getElementById('mindmapBtn').classList.remove('active');
   document.getElementById('feedbackBtn').classList.remove('active');
+  document.getElementById('portfolioBtn').classList.remove('active');
   Object.values(stockChartsInstances).forEach(c => c?.destroy());
   stockChartsInstances = {};
   hiddenGraphStocks.clear();
+  closeSaDetail();
+  closeSaHelpTooltip();
+  pfChart?.destroy();
+  pfChart = null;
 }
 
 async function initChartHeightBtns() {
@@ -610,9 +618,9 @@ function initSectorChartToggle() {
 
 // ─── 국채금리·원유·주요지수 상관관계 ──────────────────────────
 const MACRO_CORR_SERIES = [
-  { key: 'DGS2',   label: '미국 2년 국채', color: '#69db7c' },
-  { key: 'DGS10',  label: '미국 10년 국채', color: '#ff6b6b' },
-  { key: 'WTI',    label: 'WTI 원유',       color: '#f59e0b' },
+  { key: 'DGS2',   label: '미국 2년 국채', color: '#69db7c', isYield: true, fmtCur: v => `${v.toFixed(2)}%` },
+  { key: 'DGS10',  label: '미국 10년 국채', color: '#ff6b6b', isYield: true, fmtCur: v => `${v.toFixed(2)}%` },
+  { key: 'WTI',    label: 'WTI 원유',       color: '#f59e0b', fmtCur: v => `$${v.toFixed(2)}` },
   { key: 'SPX',    label: 'S&P 500',        color: '#4f7eff' },
   { key: 'NASDAQ', label: '나스닥',         color: '#cc5de8' },
 ];
@@ -620,11 +628,15 @@ const MACRO_CORR_SERIES = [
 let macroCorrChartInstances = {};
 let macroCorrHeight = 110;
 
+let macroCorrReqSeq = 0;
+
 async function loadMacroCorrelationChart(period = '1y') {
+  // 기간 버튼 연타 시 늦게 도착한 이전 응답이 차트를 덮어쓰지 않도록 마지막 요청만 반영
+  const seq = ++macroCorrReqSeq;
   const res = await fetch(`/api/macro-correlation?period=${period}`);
-  if (!res.ok) return;
+  if (!res.ok || seq !== macroCorrReqSeq) return;
   const { dates, series } = await res.json();
-  if (!dates.length) return;
+  if (seq !== macroCorrReqSeq || !dates.length) return;
 
   const grid = document.getElementById('macroCorrGrid');
   if (!grid) return;
@@ -639,6 +651,7 @@ async function loadMacroCorrelationChart(period = '1y') {
       <div class="mc-panel-head">
         <span class="mc-panel-dot" style="background:${s.color}"></span>
         <span class="mc-panel-title">${s.label}</span>
+        ${s.fmtCur ? `<span class="mc-panel-cur" id="mcCur-${s.key}"></span>` : ''}
         <span class="mc-panel-val" id="mcVal-${s.key}"></span>
       </div>
       <div class="mc-panel-chart" style="height:${macroCorrHeight}px">
@@ -690,14 +703,18 @@ async function loadMacroCorrelationChart(period = '1y') {
     const isLast = i === active.length - 1;
     const first  = vals[0];
     const last   = vals[vals.length - 1];
-    const chg    = first !== 0 ? (last - first) / Math.abs(first) * 100 : 0;
+    // 금리는 변화율이 아닌 금리 자체의 차이(%p)로 표시
+    const chg    = s.isYield ? last - first
+                 : first !== 0 ? (last - first) / Math.abs(first) * 100 : 0;
     const sign   = chg >= 0 ? '+' : '';
     const state  = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
     const valEl  = document.getElementById(`mcVal-${s.key}`);
     if (valEl) {
-      valEl.textContent = `${sign}${chg.toFixed(1)}%`;
+      valEl.textContent = s.isYield ? `${sign}${chg.toFixed(2)}%p` : `${sign}${chg.toFixed(1)}%`;
       valEl.classList.add(state);
     }
+    const curEl = document.getElementById(`mcCur-${s.key}`);
+    if (curEl) curEl.textContent = s.fmtCur(last);
 
     const ctx = document.getElementById(`mcCanvas-${s.key}`);
     if (!ctx) return;
@@ -742,14 +759,21 @@ async function loadMacroCorrelationChart(period = '1y') {
             grid: { color: '#252836' },
             ticks: {
               display: isLast,
+              // 첫/끝 라벨이 차트 밖으로 삐져나가 플롯 영역이 밀리지 않도록 안쪽 정렬
+              align: 'inner',
               color: '#7b7f97', maxTicksLimit: 8, font: { size: 9 },
             },
+            // 눈금 표시 시 Chart.js가 좌우에 붙이는 기본 여백(3px) 제거 → 위 패널들과 시작점 일치
+            afterFit: scale => { scale.paddingLeft = 0; scale.paddingRight = 0; },
             time: {
+              // 1년 이상은 월 단위 눈금(yy.MM), 그 미만은 같은 월이 반복되지 않도록 일 단위(MM.dd)
+              unit: ['1mo', '3mo', '6mo'].includes(period) ? 'day' : 'month',
               displayFormats: {
-                day:   'yy.MM.dd',
-                week:  'yy.MM.dd',
-                month: 'yyyy.MM',
-                year:  'yyyy',
+                day:     'MM.dd',
+                week:    'MM.dd',
+                month:   'yy.MM',
+                quarter: 'yy.MM',
+                year:    'yy.MM',
               },
             },
           },
@@ -757,6 +781,8 @@ async function loadMacroCorrelationChart(period = '1y') {
             position: 'right',
             grid: { color: '#252836' },
             ticks: { color: '#7b7f97', font: { size: 9 }, maxTicksLimit: 4 },
+            // 패널마다 눈금 자릿수가 달라도 플롯 폭이 같도록 축 폭 고정
+            afterFit: scale => { scale.width = 44; },
           },
         },
       },
@@ -823,7 +849,7 @@ async function initMacroCorrHeightBtns() {
 }
 
 // ─── 섹터 상대강도 (vs S&P500) ────────────────────────────────
-const RS_PERIOD_LABELS = { '1mo': '1개월', '3mo': '3개월', '6mo': '6개월', '1y': '1년', '3y': '3년', '5y': '5년' };
+const RS_PERIOD_LABELS = { '1d': '1일', '5d': '7일', '1mo': '1개월', '3mo': '3개월', '6mo': '6개월', '1y': '1년', '3y': '3년', '5y': '5년' };
 let relStrengthChart  = null;
 let relStrengthPeriod = '6mo';
 
@@ -929,7 +955,14 @@ function renderRelativeStrength(dates, series) {
           grid: { color: '#252836' },
           ticks: { color: '#7b7f97', maxTicksLimit: 10, font: { size: 10 } },
           time: {
-            displayFormats: { day: 'yy.MM.dd', week: 'yy.MM.dd', month: 'yyyy.MM', year: 'yyyy' },
+            displayFormats: {
+              minute: 'MM/dd HH:mm',
+              hour:   'MM/dd HH:mm',
+              day:    'yy.MM.dd',
+              week:   'yy.MM.dd',
+              month:  'yyyy.MM',
+              year:   'yyyy',
+            },
           },
         },
         y: {
@@ -1544,9 +1577,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   await initHeaderMenuOrder();
   initGraphView();
   initStockChartsView();
+  await initStockAnalysisView();
   initMacroAnalysisView();
   await initMindmap();
   initFeedback();
+  await initPortfolio();
   initIndexBar();
   initSectorBar();
   initMacroSection();
@@ -1628,10 +1663,12 @@ async function initHeaderMenuOrder() {
     const res = await fetch('/api/db/settings/headerMenuOrder');
     if (res.ok) {
       const saved = JSON.parse((await res.json()).value);
-      saved.forEach(id => {
-        const btn = document.getElementById(id);
-        if (btn) menu.appendChild(btn);
-      });
+      // 저장된 순서에 없는 버튼(추후 새로 추가된 메뉴 등)은 원래 DOM 순서 그대로
+      // 맨 뒤로 보내, 저장된 버튼들이 앞으로 당겨지며 새 버튼이 맨 앞으로 밀려나지 않게 함
+      const known = new Set(saved);
+      const rest = [...menu.querySelectorAll('.graph-btn')].filter(b => !known.has(b.id));
+      [...saved.map(id => document.getElementById(id)).filter(Boolean), ...rest]
+        .forEach(btn => menu.appendChild(btn));
     }
   } catch {}
 
@@ -1651,6 +1688,9 @@ async function initHeaderMenuOrder() {
     if (!dragSrc) return;
     dragSrc.classList.add('gm-dragging');
     e.dataTransfer.effectAllowed = 'move';
+    // 메뉴가 가로 스크롤 컨테이너라 드래그 중 가장자리 근처로 가면 브라우저가
+    // 자동으로 스크롤시켜 순서를 바꾸는 도중 화면이 밀리므로, 드래그하는 동안만 잠금
+    menu.classList.add('gm-drag-lock');
   });
 
   menu.addEventListener('dragover', e => {
@@ -1676,6 +1716,7 @@ async function initHeaderMenuOrder() {
 
   menu.addEventListener('dragend', () => {
     menu.querySelectorAll('.graph-btn').forEach(b => b.classList.remove('gm-dragging', 'gm-drag-over'));
+    menu.classList.remove('gm-drag-lock');
     dragSrc = null;
   });
 
@@ -2457,8 +2498,8 @@ function closeModal() {
 }
 
 // ─── 거시경제 분석 ────────────────────────────────────────────
-const HEATMAP_PERIODS = ['1W', '1M', '3M', '6M', '1Y'];
-const HEATMAP_PERIOD_LABELS = { '1W': '1주', '1M': '1개월', '3M': '3개월', '6M': '6개월', '1Y': '1년' };
+const HEATMAP_PERIODS = ['1D', '1W', '1M', '3M', '6M', '1Y'];
+const HEATMAP_PERIOD_LABELS = { '1D': '1일', '1W': '1주', '1M': '1개월', '3M': '3개월', '6M': '6개월', '1Y': '1년' };
 const SECTOR_LABELS = {
   'XLK': '기술', 'XLV': '헬스케어', 'XLF': '금융', 'XLC': '통신',
   'XLY': '경기소비재', 'XLP': '필수소비재', 'XLI': '산업재', 'XLB': '소재',
@@ -2804,8 +2845,14 @@ async function fetchYieldHistory() {
     const spread = _yieldData.spread || [];
     if (spread.length > 0) {
       const last = spread[spread.length - 1].v;
-      statusEl.textContent = last < 0 ? '역전 (경기침체 경고)' : '정상';
-      statusEl.className   = `yc-status-badge ${last < 0 ? 'inverted' : 'normal'}`;
+      // 차트 배경 구간·범례와 동일한 4단계 기준
+      const [label, cls] =
+        last < -0.5 ? ['심한 역전 (경기침체 임박)', 'severe']   :
+        last < 0    ? ['역전 (침체 경고)',          'inverted'] :
+        last < 0.5  ? ['평탄 (둔화 주의)',          'flat']     :
+                      ['정상 (경기 확장)',          'normal'];
+      statusEl.textContent = label;
+      statusEl.className   = `yc-status-badge ${cls}`;
     }
 
     renderYieldCurveChart();
@@ -3503,7 +3550,7 @@ async function fetchTgaHistory() {
     if (_tgaData.length > 0 && badge) {
       const last  = _tgaData[_tgaData.length - 1].v;
       const level = getTgaLevel(last);
-      badge.textContent = `$${last.toFixed(0)}B  ${level.label}`;
+      badge.textContent = `$${last.toLocaleString('en-US', { maximumFractionDigits: 0 })}B  ${level.label}`;
       badge.className   = `tga-badge ${level.badge}`;
     }
 
@@ -3579,7 +3626,7 @@ function renderTgaChart() {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: ctx => `$${ctx.parsed.y.toFixed(1)}B`,
+            label: ctx => `$${ctx.parsed.y.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}B`,
           },
         },
       },
@@ -3597,7 +3644,7 @@ function renderTgaChart() {
           ticks: {
             color: '#7b7f97',
             font: { size: 11 },
-            callback: val => `$${val}B`,
+            callback: val => `$${Number(val).toLocaleString('en-US')}B`,
           },
           title: { display: true, text: '잔액 (십억$)', color: '#7b7f97', font: { size: 11 } },
         },
@@ -4072,10 +4119,27 @@ function mmFmtRet(v) {
   return `<span class="mm-ret-val ${cls}">${v >= 0 ? '+' : ''}${v.toFixed(1)}%</span>`;
 }
 
+// 분류(카테고리) 소속 종목들의 7일 평균 수익률 — 헤더 트렌드 배지/배경에 사용
+function mmCatAvgReturn(cat) {
+  const vals = mmData.stocks
+    .filter(s => s.categoryId === cat.id)
+    .map(s => s.returns?.['7d'])
+    .filter(v => v != null);
+  if (!vals.length) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
 function mmFmtDrawdown(v) {
   if (v == null) return `<span class="mm-dd-val">—</span>`;
-  if (v >= -0.05) return `<span class="mm-dd-val high">고점</span>`;
-  return `<span class="mm-dd-val down">${v.toFixed(1)}%</span>`;
+  if (v >= -0.05) return `<span class="mm-dd-val">고점</span>`;
+  const cls = v <= -20 ? 'deep' : '';
+  return `<span class="mm-dd-val ${cls}">${v.toFixed(1)}%</span>`;
+}
+
+function mmFmtRsi(v) {
+  if (v == null) return `<span class="mm-rsi-val">—</span>`;
+  const cls = v >= 60 ? 'overbought' : v < 50 ? 'oversold' : '';
+  return `<span class="mm-rsi-val ${cls}">${v.toFixed(1)}</span>`;
 }
 
 // ── Element builders ─────────────────────────────────────────
@@ -4103,6 +4167,7 @@ function mmMakeStockEl(stock) {
         ${stock.tags?.length ? stock.tags.map(t=>`<span class="mm-tag">${t}</span>`).join('') : '<span class="mm-tags-hint">+ 태그 추가</span>'}
       </div>
       <div class="mm-dd-row"><span class="mm-dd-lbl">고점대비</span>${mmFmtDrawdown(stock.drawdownPct)}</div>
+      <div class="mm-dd-row"><span class="mm-dd-lbl">RSI</span>${mmFmtRsi(stock.rsi)}</div>
       <div class="mm-metrics">
         <div class="mm-returns">
           <div class="mm-ret-row"><span class="mm-ret-lbl">1D</span>${mmFmtRet(r['1d'])}</div>
@@ -4151,10 +4216,13 @@ function mmMakeCatEl(cat) {
   div.style.left = cat.position.x + 'px';
   div.style.top  = cat.position.y + 'px';
 
+  const catAvgRet = mmCatAvgReturn(cat);
+
   div.innerHTML = `
-    <div class="mm-cat-header">
+    <div class="mm-cat-header" style="background:${heatColor(catAvgRet)}">
       <span class="mm-drag-handle mm-cat-handle">⠿</span>
       <span class="mm-cat-name" data-click-id="${cat.id}" data-click-type="cat">${cat.name}</span>
+      <span class="mm-cat-trend" title="분류 평균 7일 수익률">${mmFmtRet(catAvgRet)}<span class="mm-cat-trend-lbl">7d</span></span>
       <button class="mm-cat-del-btn mm-del-btn" data-del-id="${cat.id}" data-del-type="cat" title="분류 삭제">×</button>
     </div>
     <div class="mm-cat-body" id="mm-cb-${cat.id}">
@@ -4205,6 +4273,7 @@ function mmMakeCatEl(cat) {
       </div>
       <div class="mm-cs-rets">
         <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">고점대비</span>${mmFmtDrawdown(s.drawdownPct)}</span>
+        <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">RSI</span>${mmFmtRsi(s.rsi)}</span>
         <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">1D</span>${mmFmtRet(r['1d'])}</span>
         <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">7D</span>${mmFmtRet(r['7d'])}</span>
         <span class="mm-cs-ret"><span class="mm-cs-ret-lbl">1M</span>${mmFmtRet(r['1m'])}</span>
@@ -4396,7 +4465,12 @@ async function mmFetchReturns(stockId, symbol) {
       '6m': perf['6mo']  ?? null,
       '1y': perf['1y']   ?? null,
     };
-    s.drawdownPct = ath.drawdown_pct ?? null;
+    // ath 요청이 실패(네트워크 오류·일시적 5xx)하면 응답이 {}로 대체되는데,
+    // 그때 기존에 정상 조회됐던 값을 null로 덮어쓰지 않도록 필드 존재 여부로 판단.
+    if ('drawdown_pct' in ath) s.drawdownPct = ath.drawdown_pct;
+    else if (s.drawdownPct === undefined) s.drawdownPct = null;
+    if ('rsi' in ath) s.rsi = ath.rsi;
+    else if (s.rsi === undefined) s.rsi = null;
     mmSave();
     // Re-render the affected element — 단, 지금 드래그/롱프레스 중인 카드라면
     // 건드리지 않음 (재렌더링하면 터치 대상 DOM이 사라져 제스처가 끊김)
@@ -4996,5 +5070,1590 @@ function initFeedback() {
         }
       } catch {}
     }
+  });
+}
+
+// ============================================================
+//  자 산 포 트 폴 리 오
+// ============================================================
+// 토스증권 등 증권사 공식 오픈API가 없어(개인 대상 미제공) 보유 종목을
+// 사용자가 직접 입력하는 방식으로 구현. 종목당 1행(수량·평균매입가)으로
+// 관리하며, 현재가는 기존 /api/price를 재사용해 매번 새로 조회한다.
+// 원화·달러 종목이 섞여도 비중을 비교할 수 있도록 usdKrwRate로 전부
+// 원화 환산해 합산한다.
+let pfHoldings = [];        // [{symbol, name, currency, quantity, avg_price, updated_at}]
+let pfEnriched = [];        // pfHoldings + 현재가·평가금액 등 파생값
+let pfEditingSymbol = null; // 수정 중인 종목(null이면 추가 모드)
+let pfSelected = null;      // 검색에서 고른 종목 {symbol, name, currency, currentPrice}
+let pfChart = null;
+let pfCashItems = [];       // [{id, label, currency, amount, updated_at}] — 항목별로 분류 입력
+let pfCashEditingId = null; // 수정 중인 현금 항목 id(null이면 추가 모드)
+
+function pfEscape(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+async function initPortfolio() {
+  document.getElementById('portfolioBackBtn').addEventListener('click', hideAllViews);
+  document.getElementById('portfolioBtn').addEventListener('click', () => {
+    const showing = !document.getElementById('portfolioView').classList.contains('hidden');
+    hideAllViews();
+    if (!showing) {
+      document.querySelector('main').classList.add('hidden');
+      document.getElementById('portfolioView').classList.remove('hidden');
+      document.getElementById('portfolioBtn').classList.add('active');
+      loadPortfolioData();
+    }
+  });
+
+  // ── 종목 검색 ──
+  const searchInput = document.getElementById('pfSearchInput');
+  const dropdown = document.getElementById('pfSearchDropdown');
+  let debounce;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(debounce);
+    const q = searchInput.value.trim();
+    if (!q) { dropdown.classList.add('hidden'); return; }
+    debounce = setTimeout(() => pfDoSearch(q), 300);
+  });
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { dropdown.classList.add('hidden'); searchInput.value = ''; }
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.pf-search-wrap')) dropdown.classList.add('hidden');
+  });
+
+  // ── 현금성 자산 (항목별 분류 입력) ──
+  document.getElementById('pfCashLabelInput').addEventListener('input', pfUpdateCashSubmitEnabled);
+  document.getElementById('pfCashAmountInput').addEventListener('input', pfUpdateCashSubmitEnabled);
+  document.getElementById('pfCashSubmitBtn').addEventListener('click', pfCashSubmit);
+  document.getElementById('pfCashCancelEditBtn').addEventListener('click', pfCashResetForm);
+
+  // ── 수량/매입단가 입력 → 등록 버튼 활성화 ──
+  document.getElementById('pfQtyInput').addEventListener('input', pfUpdateSubmitEnabled);
+  document.getElementById('pfPriceInput').addEventListener('input', pfUpdateSubmitEnabled);
+
+  // ── 등록/수정 저장 ──
+  document.getElementById('pfSubmitBtn').addEventListener('click', pfSubmit);
+  document.getElementById('pfCancelEditBtn').addEventListener('click', pfResetForm);
+
+  // ── 표: 종목·현금 공통 수정/삭제 버튼 (한 표에 같이 표시되므로 위임 하나로 처리) ──
+  document.getElementById('pfTableWrap').addEventListener('click', e => {
+    const editBtn = e.target.closest('.pf-edit-btn');
+    const delBtn = e.target.closest('.pf-del-btn');
+    const cashEditBtn = e.target.closest('.pf-cash-edit-btn');
+    const cashDelBtn = e.target.closest('.pf-cash-del-btn');
+    if (editBtn) pfStartEdit(editBtn.dataset.symbol);
+    else if (delBtn) pfDelete(delBtn.dataset.symbol);
+    else if (cashEditBtn) pfCashStartEdit(Number(cashEditBtn.dataset.id));
+    else if (cashDelBtn) pfCashDelete(Number(cashDelBtn.dataset.id));
+  });
+
+  // ── 보유종목에서 가져오기 ──
+  document.getElementById('pfImportToggleBtn').addEventListener('click', pfToggleImportPanel);
+  document.getElementById('pfImportList').addEventListener('input', e => {
+    if (e.target.classList.contains('pf-import-qty')) pfUpdateImportSubmitEnabled();
+  });
+  document.getElementById('pfImportSubmitBtn').addEventListener('click', pfImportSubmit);
+}
+
+// ── 보유종목(대시보드 stocks 테이블)에서 자산 포트폴리오로 일괄 추가 ──
+// 보유종목 메뉴는 종목·통화 정보만 갖고 있어 수량·매입단가가 없으므로,
+// 이미 포트폴리오에 있는 종목은 목록에서 빼고 나머지만 보여준 뒤
+// 사용자가 종목별로 수량(필수)·매입단가(현재가로 기본값 제공, 수정 가능)를
+// 채운 행만 골라 기존 POST /api/portfolio(추가 API)를 반복 호출해 한 번에 등록한다.
+let pfImportPriceMap = {}; // symbol -> 현재가(매입단가 기본값 + 통화 확인용)
+
+function pfToggleImportPanel() {
+  const panel = document.getElementById('pfImportPanel');
+  const btn = document.getElementById('pfImportToggleBtn');
+  const opening = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !opening);
+  btn.textContent = opening ? '접기 ▴' : '펼치기 ▾';
+  if (opening) pfBuildImportList();
+}
+
+async function pfBuildImportList() {
+  const list = document.getElementById('pfImportList');
+  pfImportPriceMap = {};
+  const importable = stocks.filter(s => !pfHoldings.some(h => h.symbol === s.symbol));
+
+  if (!stocks.length) {
+    list.innerHTML = '<div class="pf-import-empty">보유종목 메뉴에 추가된 종목이 없습니다.</div>';
+    document.getElementById('pfImportSubmitBtn').disabled = true;
+    return;
+  }
+  if (!importable.length) {
+    list.innerHTML = '<div class="pf-import-empty">보유종목이 모두 이미 포트폴리오에 있습니다.</div>';
+    document.getElementById('pfImportSubmitBtn').disabled = true;
+    return;
+  }
+
+  list.innerHTML = importable.map(s => `
+    <div class="pf-import-row" data-symbol="${s.symbol}" data-name="${pfEscape(s.name)}" data-currency="${s.currency}">
+      <div class="sa-name-main pf-import-name">
+        <span class="sa-name-company" title="${pfEscape(s.name)}">${pfEscape(saShortName(s.name) || s.symbol)}</span>
+        <span class="sa-name-ticker">${s.symbol}</span>
+      </div>
+      <input type="number" class="pf-import-qty" min="0" step="any" placeholder="수량" inputmode="decimal" />
+      <input type="number" class="pf-import-price" min="0" step="any" placeholder="매입단가 (현재가 조회 중...)" inputmode="decimal" />
+    </div>
+  `).join('');
+  pfUpdateImportSubmitEnabled();
+
+  const priceResults = await Promise.allSettled(
+    importable.map(s => fetch(`/api/price/${encodeURIComponent(s.symbol)}`).then(r => r.ok ? r.json() : null))
+  );
+  importable.forEach((s, i) => {
+    const pr = priceResults[i].status === 'fulfilled' ? priceResults[i].value : null;
+    const row = list.querySelector(`.pf-import-row[data-symbol="${CSS.escape(s.symbol)}"]`);
+    if (!row) return;
+    const priceInput = row.querySelector('.pf-import-price');
+    if (pr && pr.price != null) {
+      pfImportPriceMap[s.symbol] = { price: pr.price, currency: pr.currency };
+      row.dataset.currency = pr.currency;
+      priceInput.value = pr.price;
+      priceInput.placeholder = '매입단가';
+    } else {
+      priceInput.placeholder = '매입단가 (현재가 조회 실패)';
+    }
+  });
+}
+
+function pfUpdateImportSubmitEnabled() {
+  const rows = document.querySelectorAll('#pfImportList .pf-import-row');
+  const any = [...rows].some(r => parseFloat(r.querySelector('.pf-import-qty').value) > 0);
+  document.getElementById('pfImportSubmitBtn').disabled = !any;
+}
+
+async function pfImportSubmit() {
+  const rows = [...document.querySelectorAll('#pfImportList .pf-import-row')];
+  const targets = rows.map(r => {
+    const qty = parseFloat(r.querySelector('.pf-import-qty').value);
+    let price = parseFloat(r.querySelector('.pf-import-price').value);
+    if (!(price > 0)) price = pfImportPriceMap[r.dataset.symbol]?.price;
+    return { symbol: r.dataset.symbol, name: r.dataset.name, currency: r.dataset.currency, qty, price };
+  }).filter(t => t.qty > 0);
+
+  if (!targets.length) return;
+  const skipped = targets.filter(t => !(t.price > 0));
+  const ready = targets.filter(t => t.price > 0);
+  if (!ready.length) {
+    alert('매입단가를 확인할 수 없습니다. 직접 입력해주세요.');
+    return;
+  }
+
+  const btn = document.getElementById('pfImportSubmitBtn');
+  btn.disabled = true;
+  const results = await Promise.allSettled(ready.map(t => fetch('/api/portfolio', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol: t.symbol, name: t.name, currency: t.currency, quantity: t.qty, avg_price: t.price }),
+  })));
+  const failCount = results.filter(r => r.status === 'rejected' || !r.value.ok).length;
+  const okCount = ready.length - failCount;
+
+  await loadPortfolioData();
+  document.getElementById('pfImportPanel').classList.add('hidden');
+  document.getElementById('pfImportToggleBtn').textContent = '펼치기 ▾';
+
+  let msg = `${okCount}개 종목을 포트폴리오에 추가했습니다.`;
+  if (skipped.length) msg += `\n매입단가 미입력으로 ${skipped.length}개는 제외됐습니다.`;
+  if (failCount) msg += `\n${failCount}개는 저장에 실패했습니다.`;
+  alert(msg);
+}
+
+async function pfDoSearch(q) {
+  const dropdown = document.getElementById('pfSearchDropdown');
+  dropdown.innerHTML = '<div class="dd-msg">검색 중...</div>';
+  dropdown.classList.remove('hidden');
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const items = await res.json();
+    if (!items.length) {
+      dropdown.innerHTML = '<div class="dd-msg">결과 없음</div>';
+      return;
+    }
+    dropdown.innerHTML = items.slice(0, 8).map(item => `
+      <div class="dd-item" data-symbol="${item.symbol}" data-name="${item.name || ''}">
+        <span class="dd-symbol">${item.symbol}</span>
+        <span class="dd-name">${item.name || ''}</span>
+        <span class="dd-exch">${item.exchange || ''}</span>
+      </div>
+    `).join('');
+    dropdown.querySelectorAll('.dd-item').forEach(el => {
+      el.addEventListener('click', () => {
+        pfSelectStock(el.dataset.symbol, el.dataset.name);
+        document.getElementById('pfSearchInput').value = '';
+        dropdown.classList.add('hidden');
+      });
+    });
+  } catch {
+    dropdown.innerHTML = '<div class="dd-msg" style="color:#ff4655">검색 실패</div>';
+  }
+}
+
+async function pfSelectStock(symbol, name) {
+  pfSelected = { symbol, name, currency: 'USD', currentPrice: null };
+  pfRenderSelectedChip();
+  pfUpdateSubmitEnabled();
+  try {
+    const res = await fetch(`/api/price/${encodeURIComponent(symbol)}`);
+    if (res.ok) {
+      const d = await res.json();
+      if (pfSelected && pfSelected.symbol === symbol) {
+        pfSelected.currency = d.currency;
+        pfSelected.currentPrice = d.price;
+        pfRenderSelectedChip();
+      }
+    }
+  } catch {}
+}
+
+function pfRenderSelectedChip() {
+  const chip = document.getElementById('pfSelectedChip');
+  if (!pfSelected) { chip.classList.add('hidden'); chip.innerHTML = ''; return; }
+  const priceHint = pfSelected.currentPrice != null
+    ? `현재가 ${formatPrice(pfSelected.currentPrice, pfSelected.currency)}`
+    : '현재가 조회 중...';
+  chip.classList.remove('hidden');
+  chip.innerHTML = `
+    <span class="pf-chip-symbol">${pfEscape(pfSelected.symbol)}</span>
+    <span class="pf-chip-name">${pfEscape(pfSelected.name)}</span>
+    <span class="pf-chip-hint">${priceHint}</span>
+    ${pfEditingSymbol ? '' : '<button type="button" class="pf-chip-x" id="pfChipClearBtn">✕</button>'}
+  `;
+  const clearBtn = document.getElementById('pfChipClearBtn');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    pfSelected = null;
+    pfRenderSelectedChip();
+    pfUpdateSubmitEnabled();
+  });
+}
+
+function pfUpdateSubmitEnabled() {
+  const qty = parseFloat(document.getElementById('pfQtyInput').value);
+  const price = parseFloat(document.getElementById('pfPriceInput').value);
+  const ok = !!pfSelected && qty > 0 && price > 0;
+  document.getElementById('pfSubmitBtn').disabled = !ok;
+}
+
+function pfStartEdit(symbol) {
+  const h = pfHoldings.find(x => x.symbol === symbol);
+  if (!h) return;
+  pfEditingSymbol = symbol;
+  pfSelected = { symbol: h.symbol, name: h.name, currency: h.currency, currentPrice: null };
+  document.getElementById('pfQtyInput').value = h.quantity;
+  document.getElementById('pfPriceInput').value = h.avg_price;
+  document.getElementById('pfSearchInput').value = '';
+  document.getElementById('pfSearchInput').disabled = true;
+  document.getElementById('pfSubmitBtn').textContent = '수정 저장';
+  document.getElementById('pfCancelEditBtn').classList.remove('hidden');
+  pfRenderSelectedChip();
+  pfUpdateSubmitEnabled();
+  document.getElementById('pfQtyInput').focus();
+  document.querySelector('.pf-form-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function pfResetForm() {
+  pfEditingSymbol = null;
+  pfSelected = null;
+  document.getElementById('pfQtyInput').value = '';
+  document.getElementById('pfPriceInput').value = '';
+  document.getElementById('pfSearchInput').disabled = false;
+  document.getElementById('pfSubmitBtn').textContent = '추가';
+  document.getElementById('pfCancelEditBtn').classList.add('hidden');
+  pfRenderSelectedChip();
+  pfUpdateSubmitEnabled();
+}
+
+async function pfSubmit() {
+  if (!pfSelected) return;
+  const qty = parseFloat(document.getElementById('pfQtyInput').value);
+  const price = parseFloat(document.getElementById('pfPriceInput').value);
+  if (!(qty > 0) || !(price > 0)) return;
+  const btn = document.getElementById('pfSubmitBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/portfolio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol: pfSelected.symbol,
+        name: pfSelected.name,
+        currency: pfSelected.currency,
+        quantity: qty,
+        avg_price: price,
+      }),
+    });
+    if (res.ok) {
+      pfResetForm();
+      await loadPortfolioData();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(err.detail || '저장에 실패했습니다.');
+      btn.disabled = false;
+    }
+  } catch {
+    alert('저장에 실패했습니다.');
+    btn.disabled = false;
+  }
+}
+
+async function pfDelete(symbol) {
+  if (!confirm(`${symbol} 보유내역을 삭제할까요?`)) return;
+  try {
+    const res = await fetch(`/api/portfolio/${encodeURIComponent(symbol)}`, { method: 'DELETE' });
+    if (res.ok) {
+      if (pfEditingSymbol === symbol) pfResetForm();
+      await loadPortfolioData();
+    }
+  } catch {}
+}
+
+async function loadPortfolioData() {
+  const wrap = document.getElementById('pfTableWrap');
+  try {
+    const res = await fetch('/api/portfolio');
+    if (!res.ok) throw new Error('load failed');
+    pfHoldings = await res.json();
+  } catch {
+    wrap.innerHTML = '<div class="sa-error-state">데이터를 불러오지 못했습니다.<br>잠시 후 다시 시도해 주세요.</div>';
+    return;
+  }
+
+  try {
+    const cashRes = await fetch('/api/portfolio/cash');
+    if (cashRes.ok) pfCashItems = await cashRes.json();
+  } catch {}
+
+  if (usdKrwRate == null) await fetchUsdKrw();
+
+  if (!pfHoldings.length) {
+    pfEnriched = [];
+    pfRenderAll();
+    return;
+  }
+
+  wrap.innerHTML = '<div class="yc-loading">로딩 중...</div>';
+
+  const priceResults = await Promise.allSettled(
+    pfHoldings.map(h => fetch(`/api/price/${encodeURIComponent(h.symbol)}`).then(r => r.ok ? r.json() : null))
+  );
+
+  pfEnriched = pfHoldings.map((h, i) => {
+    const pr = priceResults[i].status === 'fulfilled' ? priceResults[i].value : null;
+    const priceOk = pr && pr.price != null;
+    const currentPrice = priceOk ? pr.price : h.avg_price; // 조회 실패 시 매입가로 근사(배지로 표시)
+    const changePct = priceOk ? pr.change_pct : null;
+    const marketValue = h.quantity * currentPrice;
+    const costBasis = h.quantity * h.avg_price;
+    const pnl = marketValue - costBasis;
+    const pnlPct = costBasis ? (pnl / costBasis) * 100 : null;
+    const fx = h.currency === 'KRW' ? 1 : (usdKrwRate || 0);
+    return {
+      ...h, currentPrice, changePct, priceStale: !priceOk,
+      marketValue, costBasis, pnl, pnlPct,
+      marketValueKrw: marketValue * fx, costBasisKrw: costBasis * fx,
+    };
+  });
+
+  pfRenderAll();
+}
+
+function pfPctHTML(v, digits = 1) {
+  if (v == null) return '<span class="sa-td-empty">—</span>';
+  const cls = v > 0 ? 'up' : v < 0 ? 'down' : 'flat';
+  return `<span class="sa-td ${cls}">${v >= 0 ? '+' : ''}${v.toFixed(digits)}%</span>`;
+}
+
+function pfRenderAll() {
+  // 현금은 항목(라벨)별로 따로 입력받지만, 총자산 계산과 비중 차트에서는
+  // 통화 환산 후 합계 하나로만 취급한다 — 항목 구분은 카드의 목록에서만 보여줌.
+  const cashKrw = pfCashItems.reduce((s, c) => s + c.amount * (c.currency === 'KRW' ? 1 : (usdKrwRate || 0)), 0);
+
+  const stockValueKrw = pfEnriched.reduce((s, r) => s + r.marketValueKrw, 0);
+  const stockCostKrw = pfEnriched.reduce((s, r) => s + r.costBasisKrw, 0);
+  const totalAssetKrw = stockValueKrw + cashKrw;
+  const totalPnlKrw = stockValueKrw - stockCostKrw;
+  const totalPnlPct = stockCostKrw ? (totalPnlKrw / stockCostKrw) * 100 : null;
+
+  pfRenderKpi(totalAssetKrw, stockValueKrw, cashKrw, totalPnlKrw, totalPnlPct);
+  pfRenderTable(totalAssetKrw);
+  pfRenderChart(totalAssetKrw, cashKrw);
+
+  document.getElementById('pfAsOf').textContent =
+    pfHoldings.length ? `기준 ${new Date().toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' })}` : '';
+}
+
+function pfUpdateCashSubmitEnabled() {
+  const label = document.getElementById('pfCashLabelInput').value.trim();
+  const amount = parseFloat(document.getElementById('pfCashAmountInput').value);
+  document.getElementById('pfCashSubmitBtn').disabled = !(label && amount > 0);
+}
+
+function pfCashStartEdit(id) {
+  const c = pfCashItems.find(x => x.id === id);
+  if (!c) return;
+  pfCashEditingId = id;
+  document.getElementById('pfCashLabelInput').value = c.label;
+  document.getElementById('pfCashCurrencySelect').value = c.currency;
+  document.getElementById('pfCashAmountInput').value = c.amount;
+  document.getElementById('pfCashSubmitBtn').textContent = '수정 저장';
+  document.getElementById('pfCashCancelEditBtn').classList.remove('hidden');
+  pfUpdateCashSubmitEnabled();
+  document.getElementById('pfCashLabelInput').focus();
+}
+
+function pfCashResetForm() {
+  pfCashEditingId = null;
+  document.getElementById('pfCashLabelInput').value = '';
+  document.getElementById('pfCashCurrencySelect').value = 'KRW';
+  document.getElementById('pfCashAmountInput').value = '';
+  document.getElementById('pfCashSubmitBtn').textContent = '추가';
+  document.getElementById('pfCashCancelEditBtn').classList.add('hidden');
+  pfUpdateCashSubmitEnabled();
+}
+
+async function pfCashSubmit() {
+  const label = document.getElementById('pfCashLabelInput').value.trim();
+  const currency = document.getElementById('pfCashCurrencySelect').value;
+  const amount = parseFloat(document.getElementById('pfCashAmountInput').value);
+  if (!label || !(amount > 0)) return;
+  const btn = document.getElementById('pfCashSubmitBtn');
+  btn.disabled = true;
+  try {
+    const url = pfCashEditingId ? `/api/portfolio/cash/${pfCashEditingId}` : '/api/portfolio/cash';
+    const res = await fetch(url, {
+      method: pfCashEditingId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, currency, amount }),
+    });
+    if (res.ok) {
+      pfCashResetForm();
+      await loadPortfolioData();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(err.detail || '저장에 실패했습니다.');
+      btn.disabled = false;
+    }
+  } catch {
+    alert('저장에 실패했습니다.');
+    btn.disabled = false;
+  }
+}
+
+async function pfCashDelete(id) {
+  if (!confirm('이 현금성 자산 항목을 삭제할까요?')) return;
+  try {
+    const res = await fetch(`/api/portfolio/cash/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      if (pfCashEditingId === id) pfCashResetForm();
+      await loadPortfolioData();
+    }
+  } catch {}
+}
+
+function pfRenderKpi(totalAssetKrw, stockValueKrw, cashKrw, totalPnlKrw, totalPnlPct) {
+  const el = document.getElementById('pfKpiRow');
+  const fmtKrw = v => '₩' + Math.round(v).toLocaleString('ko-KR');
+  const pnlCls = totalPnlKrw > 0 ? 'up' : totalPnlKrw < 0 ? 'down' : 'flat';
+  const cards = [
+    ['총 자산(원화 환산)', fmtKrw(totalAssetKrw), ''],
+    ['주식 평가금액', fmtKrw(stockValueKrw), ''],
+    ['현금성 자산', fmtKrw(cashKrw), ''],
+    ['평가손익', pfHoldings.length ? `${totalPnlKrw >= 0 ? '+' : ''}${fmtKrw(totalPnlKrw)}` : '—', pfHoldings.length ? pnlCls : ''],
+    ['수익률', totalPnlPct != null ? `${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(1)}%` : '—', totalPnlPct != null ? pnlCls : ''],
+    ['보유 종목', `${pfHoldings.length}개`, ''],
+  ];
+  el.innerHTML = cards.map(([label, value, cls]) => `
+    <div class="sa-kpi-card">
+      <div class="sa-kpi-label">${label}</div>
+      <div class="sa-kpi-value ${cls}">${value}</div>
+    </div>`).join('');
+}
+
+// 보유 종목과 현금성 자산을 한 표에 같이 보여준다. 자산군이 달라 컬럼 의미가
+// 안 맞는 칸(현금의 수량·매입단가·현재가·평가손익)은 "—"로 비워두고,
+// 평가금액(원화 환산 기준 비중)만 공통 기준으로 나란히 비교할 수 있게 한다.
+function pfRenderTable(totalAssetKrw) {
+  const wrap = document.getElementById('pfTableWrap');
+  if (!pfHoldings.length && !pfCashItems.length) {
+    wrap.innerHTML = '<div class="sa-empty-state">보유 종목이나 현금성 자산이 없습니다.<br>위에서 종목을 검색해 추가하거나 현금성 자산을 등록해보세요.</div>';
+    return;
+  }
+
+  const stockRows = pfEnriched.map(r => ({ valueKrw: r.marketValueKrw, html: pfStockRowHTML(r, totalAssetKrw) }));
+  const cashRows = pfCashItems.map(c => {
+    const valueKrw = c.amount * (c.currency === 'KRW' ? 1 : (usdKrwRate || 0));
+    return { valueKrw, html: pfCashRowHTML(c, valueKrw, totalAssetKrw) };
+  });
+  const rows = [...stockRows, ...cashRows].sort((a, b) => b.valueKrw - a.valueKrw);
+
+  wrap.innerHTML = `
+    <table class="sa-table pf-table">
+      <thead>
+        <tr>
+          <th class="sa-th-name">종목 / 자산</th>
+          <th>수량</th>
+          <th>매입단가</th>
+          <th>현재가</th>
+          <th>평가금액</th>
+          <th>비중</th>
+          <th>평가손익</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map(r => r.html).join('')}
+      </tbody>
+    </table>`;
+}
+
+function pfStockRowHTML(r, totalAssetKrw) {
+  return `
+    <tr data-symbol="${r.symbol}">
+      <td class="sa-td-name">
+        <div class="sa-name-main">
+          <span class="sa-name-company" title="${pfEscape(r.name)}">${pfEscape(saShortName(r.name) || r.symbol)}</span>
+          <span class="sa-name-ticker">${r.symbol}</span>
+        </div>
+      </td>
+      <td>${r.quantity.toLocaleString('ko-KR', { maximumFractionDigits: 4 })}</td>
+      <td>${formatPrice(r.avg_price, r.currency)}</td>
+      <td>${formatPrice(r.currentPrice, r.currency)}${r.priceStale ? '<span class="sa-upside-flag" title="현재가 조회에 실패해 매입단가로 대체 표시했습니다.">조회실패</span>' : ''}</td>
+      <td>${formatPrice(r.marketValue, r.currency)}</td>
+      <td>${totalAssetKrw ? (r.marketValueKrw / totalAssetKrw * 100).toFixed(1) + '%' : '—'}</td>
+      <td>${pfPctHTML(r.pnlPct)}</td>
+      <td class="pf-td-actions">
+        <button type="button" class="pf-edit-btn" data-symbol="${r.symbol}" title="수정">✎</button>
+        <button type="button" class="pf-del-btn" data-symbol="${r.symbol}" title="삭제">✕</button>
+      </td>
+    </tr>`;
+}
+
+function pfCashRowHTML(c, valueKrw, totalAssetKrw) {
+  return `
+    <tr data-cash-id="${c.id}">
+      <td class="sa-td-name">
+        <div class="sa-name-main">
+          <span class="sa-name-company">${pfEscape(c.label)}</span>
+          <span class="pf-cash-tag">현금</span>
+        </div>
+      </td>
+      <td class="sa-td-empty">—</td>
+      <td class="sa-td-empty">—</td>
+      <td class="sa-td-empty">—</td>
+      <td>${formatPrice(c.amount, c.currency)}</td>
+      <td>${totalAssetKrw ? (valueKrw / totalAssetKrw * 100).toFixed(1) + '%' : '—'}</td>
+      <td class="sa-td-empty">—</td>
+      <td class="pf-td-actions">
+        <button type="button" class="pf-cash-edit-btn" data-id="${c.id}" title="수정">✎</button>
+        <button type="button" class="pf-cash-del-btn" data-id="${c.id}" title="삭제">✕</button>
+      </td>
+    </tr>`;
+}
+
+// 슬라이스가 너무 많으면 legend·라벨이 뭉개지므로 상위 7개 + 나머지는 "기타"로 묶고,
+// 현금도 하나의 슬라이스로 포함해 실제 자산배분을 그대로 보여준다.
+function pfRenderChart(totalAssetKrw, cashKrw) {
+  const canvas = document.getElementById('pfChartCanvas');
+  const emptyEl = document.getElementById('pfChartEmpty');
+  if (!totalAssetKrw) {
+    pfChart?.destroy();
+    pfChart = null;
+    canvas.classList.add('hidden');
+    emptyEl.classList.remove('hidden');
+    return;
+  }
+  canvas.classList.remove('hidden');
+  emptyEl.classList.add('hidden');
+
+  const sorted = [...pfEnriched].sort((a, b) => b.marketValueKrw - a.marketValueKrw);
+  const top = sorted.slice(0, 7);
+  const restSum = sorted.slice(7).reduce((s, r) => s + r.marketValueKrw, 0);
+
+  const labels = top.map(r => r.symbol);
+  const values = top.map(r => r.marketValueKrw);
+  if (restSum > 0) { labels.push('기타'); values.push(restSum); }
+  if (cashKrw > 0) { labels.push('현금'); values.push(cashKrw); }
+
+  const colors = labels.map((_, i) => STOCK_CHART_COLORS[i % STOCK_CHART_COLORS.length]);
+
+  pfChart?.destroy();
+  pfChart = new Chart(canvas, {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderColor: 'var(--card-bg)', borderWidth: 2 }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { color: getComputedStyle(document.body).getPropertyValue('--text'), boxWidth: 12, padding: 10 } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const pct = totalAssetKrw ? (ctx.parsed / totalAssetKrw * 100).toFixed(1) : '0.0';
+              return ` ${ctx.label}: ₩${Math.round(ctx.parsed).toLocaleString('ko-KR')} (${pct}%)`;
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+// ============================================================
+//  종 목 별 분 석
+// ============================================================
+// 백엔드(/api/stock-analysis)가 종목별 가치·성장·수익성·안정성·주주환원
+// 원자료와 카테고리별 점수(0~100)를 계산해서 내려준다.
+// 여기서는 그 카테고리 점수에 사용자가 고른 전략 가중치를 곱해 총점을 내고,
+// 총점·상승여력을 기준으로 투자판단 배지를 정하는 부분만 담당한다.
+// (점수 계산 로직 자체는 stock_scoring.py 참고 — 렌더링 코드와 분리되어 있음)
+
+const SA_STRATEGY_PRESETS = {
+  classic:  { label: '전통 가치투자',   value: 40, growth: 10, quality: 20, stability: 20, shareholderReturn: 10 },
+  growth:   { label: '성장주 투자',     value: 25, growth: 30, quality: 25, stability: 10, shareholderReturn: 10 },
+  pension:  { label: '연금형 장기투자', value: 20, growth: 20, quality: 35, stability: 15, shareholderReturn: 10 },
+  dividend: { label: '배당투자',       value: 20, growth: 10, quality: 20, stability: 20, shareholderReturn: 30 },
+  custom:   { label: '사용자 설정',    value: 30, growth: 20, quality: 25, stability: 15, shareholderReturn: 10 },
+};
+
+const SA_WEIGHT_KEYS = [
+  { key: 'value',             label: '가치' },
+  { key: 'growth',            label: '성장' },
+  { key: 'quality',           label: '퀄리티' },
+  { key: 'stability',         label: '안정성' },
+  { key: 'shareholderReturn', label: '주주환원' },
+];
+
+const SA_JUDGMENTS = [
+  { key: 'undervalued', label: '저평가 검토' },
+  { key: 'buywatch',    label: '매수 관심' },
+  { key: 'fair',        label: '적정가 부근' },
+  { key: 'overvalued',  label: '고평가 주의' },
+  { key: 'warning',     label: '펀더멘털 경고' },
+  { key: 'review',      label: '추가 확인 필요' },
+  { key: 'watch',       label: '관망' },
+];
+
+function saPresetWeights(key) {
+  const { label, ...w } = SA_STRATEGY_PRESETS[key];
+  return w;
+}
+
+let saData = [];
+let saLoaded = false;
+let saMatrixChart = null;
+let saSelectedSymbol = null;
+let saSortKey = 'totalScore';
+let saSortAsc = false;
+let saStrategy = 'classic';
+let saWeights = saPresetWeights('classic');
+let saFilters = { q: '', country: 'all', judgment: 'all', minScore: null, minUpside: null };
+let saSelectedSymbols = new Set(); // 사용자가 표에서 체크박스로 고른 종목 (세션 동안만 유지)
+let saOnlySelected = false;        // "선택한 종목만 보기" 토글 상태
+
+// ─── 총점·투자판단 계산 (가중치가 바뀔 때마다 클라이언트에서 즉시 재계산) ───
+function saWeightedTotal(scores, weights) {
+  const parts = SA_WEIGHT_KEYS
+    .map(({ key }) => [scores?.[key], weights[key]])
+    .filter(([s, w]) => s != null && w > 0);
+  if (!parts.length) return null;
+  const totalW = parts.reduce((sum, [, w]) => sum + w, 0);
+  const sum = parts.reduce((sum, [s, w]) => sum + s * w, 0);
+  return totalW > 0 ? Math.round((sum / totalW) * 10) / 10 : null;
+}
+
+function saDeriveJudgment(row, totalScore) {
+  if (!row.isCompany) return { key: 'watch', label: '관망 (ETF·펀드)' };
+
+  const upside = row.fairValue?.upsidePercent;
+  const quality = row.scores?.quality;
+  const stability = row.scores?.stability;
+  const scoredCategories = SA_WEIGHT_KEYS.filter(({ key }) => row.scores?.[key] != null).length;
+
+  if (totalScore == null || scoredCategories < 2 || row.fairValue?.base == null) {
+    return { key: 'review', label: '추가 확인 필요' };
+  }
+  if ((quality != null && quality < 35) || (stability != null && stability < 30)) {
+    return { key: 'warning', label: '펀더멘털 경고' };
+  }
+  if (upside != null && upside >= 20 && totalScore >= 75 && (quality == null || quality >= 60)) {
+    return { key: 'undervalued', label: '저평가 검토' };
+  }
+  if (upside != null && upside >= 10 && totalScore >= 65) {
+    return { key: 'buywatch', label: '매수 관심' };
+  }
+  if (upside != null && upside <= -20) {
+    return { key: 'overvalued', label: '고평가 주의' };
+  }
+  if (upside != null && upside >= -10 && upside <= 10) {
+    return { key: 'fair', label: '적정가 부근' };
+  }
+  return { key: 'watch', label: '관망' };
+}
+
+function saEnrichedRows() {
+  return saData.filter(d => !d.error).map(row => {
+    const totalScore = saWeightedTotal(row.scores, saWeights);
+    return { ...row, totalScore, judgment: saDeriveJudgment(row, totalScore) };
+  });
+}
+
+function saFilteredRows() {
+  let rows = saEnrichedRows();
+  const q = saFilters.q.trim().toLowerCase();
+  if (q) {
+    rows = rows.filter(r => r.symbol.toLowerCase().includes(q) || (r.name || '').toLowerCase().includes(q));
+  }
+  if (saFilters.country !== 'all') {
+    rows = rows.filter(r => (r.currency === 'KRW' ? 'KR' : 'US') === saFilters.country);
+  }
+  if (saFilters.judgment !== 'all') {
+    rows = rows.filter(r => r.judgment.key === saFilters.judgment);
+  }
+  if (saFilters.minScore != null && !Number.isNaN(saFilters.minScore)) {
+    rows = rows.filter(r => r.totalScore != null && r.totalScore >= saFilters.minScore);
+  }
+  if (saFilters.minUpside != null && !Number.isNaN(saFilters.minUpside)) {
+    rows = rows.filter(r => r.fairValue?.upsidePercent != null && r.fairValue.upsidePercent >= saFilters.minUpside);
+  }
+  if (saOnlySelected) {
+    rows = rows.filter(r => saSelectedSymbols.has(r.symbol));
+  }
+  return rows;
+}
+
+function updateSaSelectedCount() {
+  const el = document.getElementById('saSelectedCountBadge');
+  if (el) el.textContent = String(saSelectedSymbols.size);
+}
+
+const SA_SORT_ACCESSORS = {
+  name:              r => r.name || r.symbol,
+  price:             r => r.price,
+  change:            r => r.changePercent,
+  pe:                r => r.valuation?.pe,
+  forwardPe:         r => r.valuation?.forwardPe,
+  peg:               r => r.valuation?.peg,
+  epsGrowth:         r => r.growth?.forwardEpsGrowth,
+  roe:               r => r.profitability?.roe,
+  dividendYield:     r => r.shareholderReturn?.dividendYield,
+  value:             r => r.scores?.value,
+  growth:            r => r.scores?.growth,
+  quality:           r => r.scores?.quality,
+  stability:         r => r.scores?.stability,
+  shareholderReturn: r => r.scores?.shareholderReturn,
+  totalScore:        r => r.totalScore,
+  upside:            r => r.fairValue?.upsidePercent,
+};
+
+// 상승여력 산출 방식이 1개(대부분 적자 기업이라 PER·Graham이 제외되고
+// 애널리스트 목표가 하나에만 의존)뿐이면 신뢰도가 낮으므로, 방식이 2개 이상
+// 확보된 종목과 같은 줄에서 경쟁시키지 않는다. → saUpsideReliable() 참고
+function saUpsideReliable(r) {
+  return (r.fairValue?.methods?.length || 0) >= 2;
+}
+
+function saSortRows(rows) {
+  const acc = SA_SORT_ACCESSORS[saSortKey] || SA_SORT_ACCESSORS.totalScore;
+  if (saSortKey === 'upside') {
+    // 방식 2개 이상(신뢰도 높음) 종목을 항상 앞쪽 그룹에 두고, 그 안에서만 값으로 정렬.
+    // 방식 1개(목표가 단독) 종목은 값이 아무리 높아도 뒤쪽 그룹으로 밀어 별도 취급한다.
+    return [...rows].sort((a, b) => {
+      const ra = saUpsideReliable(a), rb = saUpsideReliable(b);
+      if (ra !== rb) return ra ? -1 : 1;
+      const va = acc(a), vb = acc(b);
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return saSortAsc ? va - vb : vb - va;
+    });
+  }
+  return [...rows].sort((a, b) => {
+    const va = acc(a), vb = acc(b);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === 'string') return saSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return saSortAsc ? va - vb : vb - va;
+  });
+}
+
+// ─── 뷰 전환 ────────────────────────────────────────────
+function toggleStockAnalysisView() {
+  const showing = !document.getElementById('stockAnalysisView').classList.contains('hidden');
+  hideAllViews();
+  if (!showing) {
+    document.querySelector('main').classList.add('hidden');
+    document.getElementById('stockAnalysisView').classList.remove('hidden');
+    document.getElementById('stockAnalysisBtn').classList.add('active');
+    if (!saLoaded) loadStockAnalysisData();
+    else renderSaTable();
+  }
+}
+
+async function loadStockAnalysisData() {
+  const wrap = document.getElementById('saTableWrap');
+  wrap.innerHTML = '<div class="yc-loading">로딩 중...</div>';
+  try {
+    const res = await fetch('/api/stock-analysis');
+    if (!res.ok) throw new Error('load failed');
+    saData = await res.json();
+    saLoaded = true;
+    document.getElementById('saAsOf').innerHTML =
+      `기준일 ${new Date().toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' })}<br>` +
+      `재무데이터는 최근 공시 분기 기준`;
+    renderSaTable();
+  } catch {
+    wrap.innerHTML = '<div class="sa-error-state">데이터를 불러오지 못했습니다.<br>잠시 후 다시 시도해 주세요.' +
+      '<br><button class="sa-retry-btn" id="saRetryBtn">다시 시도</button></div>';
+    document.getElementById('saRetryBtn')?.addEventListener('click', loadStockAnalysisData);
+  }
+}
+
+// ─── KPI ────────────────────────────────────────────────
+function renderSaKpi(rows) {
+  const el = document.getElementById('saKpiRow');
+  if (!el) return;
+  const companyRows = rows.filter(r => r.isCompany);
+  const scored = companyRows.filter(r => r.totalScore != null);
+  const avgScore = scored.length ? scored.reduce((s, r) => s + r.totalScore, 0) / scored.length : null;
+  const upsideRows = companyRows.filter(r => r.fairValue?.upsidePercent != null);
+  const avgUpside = upsideRows.length ? upsideRows.reduce((s, r) => s + r.fairValue.upsidePercent, 0) / upsideRows.length : null;
+  const buyCount = companyRows.filter(r => r.judgment.key === 'undervalued' || r.judgment.key === 'buywatch').length;
+  const riskCount = companyRows.filter(r => r.judgment.key === 'overvalued' || r.judgment.key === 'warning').length;
+  const lackCount = companyRows.filter(r => r.judgment.key === 'review').length;
+
+  const upsideCls = avgUpside == null ? 'flat' : avgUpside > 0 ? 'up' : avgUpside < 0 ? 'down' : 'flat';
+  const cards = [
+    ['분석 종목', `${rows.length}개`, ''],
+    ['평균 종합점수', avgScore != null ? `${avgScore.toFixed(1)}점` : '—', ''],
+    ['평균 상승여력', avgUpside != null ? `${avgUpside >= 0 ? '+' : ''}${avgUpside.toFixed(1)}%` : '—', upsideCls],
+    ['저평가·매수 관심', `${buyCount}개`, buyCount ? 'up' : ''],
+    ['고평가·경고', `${riskCount}개`, riskCount ? 'down' : ''],
+    ['데이터 부족', `${lackCount}개`, ''],
+  ];
+  el.innerHTML = cards.map(([label, value, cls]) => `
+    <div class="sa-kpi-card">
+      <div class="sa-kpi-label">${label}</div>
+      <div class="sa-kpi-value ${cls}">${value}</div>
+    </div>`).join('');
+}
+
+// ─── 표시 헬퍼 ──────────────────────────────────────────
+function saScoreGrade(score) {
+  if (score == null) return '';
+  if (score >= 70) return 'grade-high';
+  if (score >= 45) return 'grade-mid';
+  return 'grade-low';
+}
+
+function saScoreCellHTML(score) {
+  if (score == null) return '<span class="sa-td-empty">—</span>';
+  return `<span class="sa-score-cell">
+    <span class="sa-score-bar"><span class="sa-score-bar-fill ${saScoreGrade(score)}" style="width:${Math.max(0, Math.min(100, score))}%"></span></span>
+    ${score.toFixed(0)}
+  </span>`;
+}
+
+function saPctHTML(v, digits = 1) {
+  if (v == null) return '<span class="sa-td-empty">—</span>';
+  const cls = v > 0 ? 'up' : v < 0 ? 'down' : 'flat';
+  return `<span class="sa-td ${cls}">${v >= 0 ? '+' : ''}${v.toFixed(digits)}%</span>`;
+}
+
+// 상승여력 셀 전용: 값 자체는 saPctHTML과 동일하게 표시하되, 산출 근거가
+// 애널리스트 목표가 하나뿐인(방식 1개) 종목에는 "단독" 배지를 붙여
+// 다른 지표(PER 재평가·Graham)로 검증된 값과 시각적으로 구분한다.
+function saUpsideCellHTML(row) {
+  const v = row.fairValue?.upsidePercent;
+  const base = saPctHTML(v);
+  if (v == null || saUpsideReliable(row)) return base;
+  return `${base}<span class="sa-upside-flag" title="적자 등으로 PER 재평가·Graham 공식이 제외되어, 애널리스트 목표가 평균 하나에만 근거한 참고용 수치입니다. 순위에서도 방식 2개 이상 확보된 종목보다 뒤로 별도 정렬됩니다.">단독</span>`;
+}
+
+function saPctPlain(v, digits = 1) {
+  return v != null ? `${v.toFixed(digits)}%` : '—';
+}
+
+function saNumHTML(v, digits = 1, suffix = '') {
+  if (v == null) return '<span class="sa-td-empty">—</span>';
+  return `${v.toFixed(digits)}${suffix}`;
+}
+
+// 표에서 회사명이 너무 길어 보이지 않도록 흔한 법인 형태 표기(Inc./Corporation/Co., Ltd. 등)를
+// 끝에서 한 번만 제거함. ETF/펀드 이름의 "ETF"·"Trust" 등은 상품 성격을 나타내므로 남겨두고,
+// 그래도 긴 이름은 CSS로 말줄임 처리하며 title 속성으로 전체 이름을 볼 수 있게 함
+const SA_NAME_SUFFIX_RE = new RegExp(
+  '\\s*,?\\s*(' +
+    'Co\\.,?\\s*Ltd\\.?|' +
+    'Incorporated|Inc\\.?|' +
+    'Corporation|Corp\\.?|' +
+    'Limited|Ltd\\.?|' +
+    'Holdings?|' +
+    'Company|Co\\.?|' +
+    'Group|' +
+    'Trust|' +
+    'PLC|plc' +
+  ')\\s*$'
+);
+
+function saShortName(name) {
+  if (!name) return name;
+  return name.trim().replace(SA_NAME_SUFFIX_RE, '').trim() || name;
+}
+
+// ─── 비교표 ─────────────────────────────────────────────
+const SA_COLUMNS = [
+  ['name',              '종목',       'sa-th-name'],
+  ['totalScore',        '종합점수',   ''],
+  ['upside',            '상승여력',   ''],
+  ['price',             '현재가',     ''],
+  ['change',            '등락률',     ''],
+  ['pe',                'PER',        ''],
+  ['forwardPe',         'Fwd PER',    ''],
+  ['peg',               'PEG',        ''],
+  ['epsGrowth',         'EPS성장',    ''],
+  ['roe',               'ROE',        ''],
+  ['dividendYield',     '배당수익률', ''],
+  ['value',             '가치',       ''],
+  ['growth',            '성장',       ''],
+  ['quality',           '퀄리티',     ''],
+  ['stability',         '안정성',     ''],
+  ['shareholderReturn', '주주환원',   ''],
+];
+
+// 표 헤더의 ⓘ 아이콘을 누르면 뜨는 간단한 지표 설명 (컬럼 key 기준)
+const SA_METRIC_HELP = {
+  pe:                'PER (주가수익비율): 현재가를 최근 12개월 실적 기준 EPS로 나눈 값입니다. 낮을수록 저평가 가능성이 있지만, 업종 특성·성장률과 함께 봐야 합니다.',
+  forwardPe:         'Forward PER: 향후 12개월 예상 EPS 기준 PER입니다. 애널리스트 추정치를 사용하므로 실제 실적과 차이가 날 수 있습니다.',
+  peg:               'PEG: Forward PER을 EPS 성장률(%)로 나눈 값입니다. 1배 이하면 성장률 대비 저평가로 해석하는 경우가 많습니다.',
+  epsGrowth:         '향후 EPS 성장률(추정): 최근 EPS 대비 향후 예상 EPS의 증가율입니다. (추정 EPS − 최근 EPS) ÷ 최근 EPS로 계산합니다.',
+  roe:               'ROE (자기자본이익률): 자기자본으로 얼마나 효율적으로 이익을 냈는지 나타내는 수익성 지표입니다.',
+  dividendYield:     '배당수익률: 현재 주가 대비 연간 배당금 비율입니다.',
+  value:             '가치 점수: PEG · FCF Yield · EV/EBITDA · PBR · PSR을 종합해 저평가 정도를 0~100점으로 환산한 점수입니다.',
+  growth:            '성장 점수: 매출·이익 성장률과 향후 EPS 성장률 전망을 종합한 0~100점 점수입니다.',
+  quality:           '퀄리티 점수: 매출총이익률·영업이익률·순이익률·ROE·ROA·FCF Margin 등 수익성을 종합한 0~100점 점수입니다.',
+  stability:         '안정성 점수: 부채비율·유동비율·당좌비율·Net Debt/EBITDA 등 재무 안정성을 종합한 0~100점 점수입니다.',
+  shareholderReturn: '주주환원 점수: 배당수익률과 배당성향을 종합한 0~100점 점수입니다.',
+  totalScore:        '종합점수: 가치·성장·퀄리티·안정성·주주환원 5개 점수를 현재 선택된 전략 가중치로 가중평균한 값입니다. 전략이나 가중치를 바꾸면 즉시 재계산됩니다.',
+  upside:            '상승여력: Forward PER 재평가·Graham 공식·애널리스트 목표가 평균을 종합한 기준 적정가가 현재가 대비 얼마나 높은지를 나타냅니다. 적자 기업 등 방식이 애널리스트 목표가 1개뿐인 종목은 "단독" 배지가 붙고, 순위에서도 방식 2개 이상인 종목보다 뒤로 별도 정렬됩니다.',
+  judgment:          '투자판단: 종합점수와 상승여력을 기준으로 자동 분류한 참고용 배지입니다. 매수·매도를 권유하는 것이 아니며, 공개된 재무·시장 데이터를 기반으로 한 참고 정보입니다.',
+};
+
+function saHelpIconHTML(key, label) {
+  const text = SA_METRIC_HELP[key];
+  if (!text) return '';
+  return `<button type="button" class="sa-help-icon" data-help="${key}" aria-label="${label} 설명 보기">ⓘ</button>`;
+}
+
+// ─── 지표 설명 툴팁 (표 헤더 · 상세 패널 공용) ─────────────
+let saHelpTooltipEl = null;
+let saHelpOpenFor = null;
+
+function ensureSaHelpTooltip() {
+  if (saHelpTooltipEl) return saHelpTooltipEl;
+  const el = document.createElement('div');
+  el.className = 'sa-help-tooltip hidden';
+  el.setAttribute('role', 'tooltip');
+  document.body.appendChild(el);
+  document.addEventListener('click', e => {
+    if (saHelpOpenFor && !e.target.closest('.sa-help-icon') && !e.target.closest('.sa-help-tooltip')) {
+      closeSaHelpTooltip();
+    }
+  });
+  window.addEventListener('scroll', () => closeSaHelpTooltip(), true);
+  window.addEventListener('resize', () => closeSaHelpTooltip());
+  saHelpTooltipEl = el;
+  return el;
+}
+
+function closeSaHelpTooltip() {
+  if (!saHelpTooltipEl) return;
+  saHelpTooltipEl.classList.add('hidden');
+  saHelpOpenFor = null;
+}
+
+function toggleSaHelpTooltip(iconEl, text) {
+  if (saHelpOpenFor === iconEl) { closeSaHelpTooltip(); return; }
+  const el = ensureSaHelpTooltip();
+  el.textContent = text;
+  el.classList.remove('hidden');
+  el.style.left = '-9999px';
+  el.style.top = '-9999px';
+  saHelpOpenFor = iconEl;
+  requestAnimationFrame(() => {
+    if (saHelpOpenFor !== iconEl) return;
+    const iconRect = iconEl.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    let left = iconRect.left + iconRect.width / 2 - elRect.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - elRect.width - 8));
+    let top = iconRect.bottom + 8;
+    if (top + elRect.height > window.innerHeight - 8) top = iconRect.top - elRect.height - 8;
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  });
+}
+
+function wireSaHelpIcons(root) {
+  root.querySelectorAll('.sa-help-icon').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      toggleSaHelpTooltip(btn, SA_METRIC_HELP[btn.dataset.help] || '');
+    });
+  });
+}
+
+function renderSaTable() {
+  const wrap = document.getElementById('saTableWrap');
+  if (!wrap) return;
+  closeSaHelpTooltip(); // 재렌더링으로 이전 헤더 아이콘이 사라지므로 열려있던 툴팁도 함께 닫음
+
+  if (!saData.length) {
+    renderSaKpi([]);
+    wrap.innerHTML = `<div class="sa-empty-state">분석할 종목이 없습니다.<br>먼저 종목을 추가해 주세요.
+      <br><button class="sa-empty-btn" id="saAddStockBtn">종목 추가하러 가기</button></div>`;
+    document.getElementById('saAddStockBtn')?.addEventListener('click', () => {
+      hideAllViews();
+      document.getElementById('dashboardBtn').classList.add('active');
+      document.getElementById('searchInput')?.focus();
+    });
+    saMatrixChart?.destroy();
+    saMatrixChart = null;
+    return;
+  }
+
+  renderSaKpi(saEnrichedRows());
+
+  const rows = saSortRows(saFilteredRows());
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="sa-empty-state">조건에 맞는 종목이 없습니다.<br>필터를 조정해보세요.</div>';
+    saMatrixChart?.destroy();
+    saMatrixChart = null;
+    return;
+  }
+
+  const sortArrow = key => saSortKey === key ? (saSortAsc ? ' ↑' : ' ↓') : '';
+  const th = (key, label, extraCls) =>
+    `<th data-key="${key}" class="${extraCls} ${saSortKey === key ? 'sorted' : ''}"><span class="sa-th-label">${label}${sortArrow(key)}</span>${saHelpIconHTML(key, label)}</th>`;
+
+  const allChecked  = rows.every(r => saSelectedSymbols.has(r.symbol));
+  const someChecked = rows.some(r => saSelectedSymbols.has(r.symbol));
+
+  wrap.innerHTML = `
+    <table class="sa-table">
+      <thead>
+        <tr>
+          <th class="sa-th-check"><input type="checkbox" id="saSelectAllCheckbox" title="현재 목록 전체 선택/해제" ${allChecked ? 'checked' : ''} /></th>
+          <th class="sa-th-rank">#</th>
+          ${SA_COLUMNS.map(([key, label, cls]) => th(key, label, cls)).join('')}
+          <th><span class="sa-th-label">투자판단</span>${saHelpIconHTML('judgment', '투자판단')}</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((r, i) => `
+          <tr data-symbol="${r.symbol}">
+            <td class="sa-td-check"><input type="checkbox" class="sa-row-check" data-symbol="${r.symbol}" ${saSelectedSymbols.has(r.symbol) ? 'checked' : ''} /></td>
+            <td class="sa-td-rank">${i + 1}</td>
+            <td class="sa-td-name">
+              <div class="sa-name-main">
+                <span class="sa-name-company" title="${r.name || r.symbol}">${saShortName(r.name) || r.symbol}</span>
+                <span class="sa-name-ticker">${r.symbol}</span>
+              </div>
+            </td>
+            <td><strong>${r.totalScore != null ? r.totalScore.toFixed(1) : '—'}</strong></td>
+            <td>${saUpsideCellHTML(r)}</td>
+            <td>${r.price != null ? formatPrice(r.price, r.currency) : '<span class="sa-td-empty">—</span>'}</td>
+            <td>${saPctHTML(r.changePercent, 2)}</td>
+            <td>${saNumHTML(r.valuation?.pe)}</td>
+            <td>${saNumHTML(r.valuation?.forwardPe)}</td>
+            <td>${saNumHTML(r.valuation?.peg, 2)}</td>
+            <td>${saPctHTML(r.growth?.forwardEpsGrowth)}</td>
+            <td>${saNumHTML(r.profitability?.roe, 1, '%')}</td>
+            <td>${r.shareholderReturn?.dividendYield != null ? r.shareholderReturn.dividendYield.toFixed(2) + '%' : '<span class="sa-td-empty">—</span>'}</td>
+            <td>${saScoreCellHTML(r.scores?.value)}</td>
+            <td>${saScoreCellHTML(r.scores?.growth)}</td>
+            <td>${saScoreCellHTML(r.scores?.quality)}</td>
+            <td>${saScoreCellHTML(r.scores?.stability)}</td>
+            <td>${saScoreCellHTML(r.scores?.shareholderReturn)}</td>
+            <td><span class="sa-judgment-badge jd-${r.judgment.key}">${r.judgment.label}</span></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
+
+  wrap.querySelectorAll('thead th[data-key]').forEach(thEl => {
+    thEl.addEventListener('click', () => {
+      const key = thEl.dataset.key;
+      if (saSortKey === key) saSortAsc = !saSortAsc;
+      else { saSortKey = key; saSortAsc = false; }
+      renderSaTable();
+    });
+  });
+  wrap.querySelectorAll('tbody tr').forEach(tr => {
+    tr.addEventListener('click', () => openSaDetail(tr.dataset.symbol));
+  });
+  wireSaHelpIcons(wrap);
+
+  wrap.querySelectorAll('.sa-row-check').forEach(cb => {
+    cb.addEventListener('click', e => e.stopPropagation()); // 체크박스 클릭이 행 클릭(상세 열기)으로 안 번지게
+    cb.addEventListener('change', () => {
+      const sym = cb.dataset.symbol;
+      if (cb.checked) saSelectedSymbols.add(sym);
+      else saSelectedSymbols.delete(sym);
+      updateSaSelectedCount();
+      if (saOnlySelected) renderSaTable();
+      else {
+        const selectAllCb = document.getElementById('saSelectAllCheckbox');
+        if (selectAllCb) {
+          const allChecked  = rows.every(r => saSelectedSymbols.has(r.symbol));
+          const someChecked = rows.some(r => saSelectedSymbols.has(r.symbol));
+          selectAllCb.checked = allChecked;
+          selectAllCb.indeterminate = !allChecked && someChecked;
+        }
+      }
+    });
+  });
+
+  const selectAllCb = document.getElementById('saSelectAllCheckbox');
+  if (selectAllCb) {
+    selectAllCb.indeterminate = !allChecked && someChecked;
+    selectAllCb.addEventListener('click', e => e.stopPropagation());
+    selectAllCb.addEventListener('change', () => {
+      rows.forEach(r => {
+        if (selectAllCb.checked) saSelectedSymbols.add(r.symbol);
+        else saSelectedSymbols.delete(r.symbol);
+      });
+      updateSaSelectedCount();
+      renderSaTable();
+    });
+  }
+  updateSaSelectedCount();
+
+  renderSaMatrix(rows);
+}
+
+// ─── 가치·성장 매트릭스 ─────────────────────────────────
+function saQualityColor(q) {
+  if (q == null) return 'rgba(123,127,151,0.55)';
+  if (q >= 70) return 'rgba(0,209,122,0.65)';
+  if (q >= 45) return 'rgba(79,126,255,0.65)';
+  return 'rgba(255,70,85,0.65)';
+}
+
+function renderSaMatrix(rows) {
+  const canvas = document.getElementById('saMatrixCanvas');
+  if (!canvas) return;
+  saMatrixChart?.destroy();
+  saMatrixChart = null;
+
+  const points = rows.filter(r => r.scores?.value != null && r.scores?.growth != null);
+  if (!points.length) return;
+
+  const caps = points.map(r => r.marketCap).filter(v => v != null);
+  const maxCap = caps.length ? Math.max(...caps) : 1;
+
+  const data = points.map(r => ({
+    x: r.scores.value,
+    y: r.scores.growth,
+    r: r.marketCap ? 6 + Math.sqrt(r.marketCap / (maxCap || 1)) * 18 : 8,
+    row: r,
+  }));
+
+  saMatrixChart = new Chart(canvas.getContext('2d'), {
+    type: 'bubble',
+    data: {
+      datasets: [{
+        data,
+        backgroundColor: data.map(d => saQualityColor(d.row.scores?.quality)),
+        borderColor: 'rgba(255,255,255,0.25)',
+        borderWidth: 1,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { min: 0, max: 100, title: { display: true, text: '가치점수', color: '#7b7f97' }, grid: { color: '#252836' }, ticks: { color: '#7b7f97' } },
+        y: { min: 0, max: 100, title: { display: true, text: '성장점수', color: '#7b7f97' }, grid: { color: '#252836' }, ticks: { color: '#7b7f97' } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const r = ctx.raw.row;
+              return `${r.name || r.symbol} (${r.symbol}) · 가치 ${r.scores.value.toFixed(0)} · 성장 ${r.scores.growth.toFixed(0)}`;
+            },
+          },
+        },
+      },
+      onClick: (evt, elements) => {
+        if (elements.length) openSaDetail(data[elements[0].index].row.symbol);
+      },
+    },
+  });
+}
+
+// ─── 전략 프리셋 · 가중치 슬라이더 ──────────────────────
+function renderSaStrategyPresets() {
+  const el = document.getElementById('saStrategyPresets');
+  if (!el) return;
+  el.innerHTML = Object.entries(SA_STRATEGY_PRESETS).map(([key, p]) =>
+    `<button class="sa-preset-btn ${saStrategy === key ? 'active' : ''}" data-key="${key}">${p.label}</button>`
+  ).join('');
+  el.querySelectorAll('.sa-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      saStrategy = btn.dataset.key;
+      saWeights = saPresetWeights(saStrategy);
+      renderSaStrategyPresets();
+      renderSaWeightSliders();
+      saveSaSettings();
+      renderSaTable();
+    });
+  });
+}
+
+// 슬라이더 하나를 옮기면 나머지 항목들에서 비례해서 덜어내/보태서 합계가 항상 100이 되게 함
+function saAdjustWeight(changedKey, newValue) {
+  newValue = Math.max(0, Math.min(100, Math.round(newValue)));
+  const otherKeys = SA_WEIGHT_KEYS.map(w => w.key).filter(k => k !== changedKey);
+  const othersSum = otherKeys.reduce((s, k) => s + saWeights[k], 0);
+  const remaining = 100 - newValue;
+  const next = { ...saWeights, [changedKey]: newValue };
+
+  let assigned = 0;
+  otherKeys.forEach((k, idx) => {
+    if (idx === otherKeys.length - 1) {
+      next[k] = Math.max(0, remaining - assigned);
+    } else {
+      const share = othersSum > 0 ? Math.round((saWeights[k] / othersSum) * remaining) : Math.round(remaining / otherKeys.length);
+      next[k] = share;
+      assigned += share;
+    }
+  });
+  saWeights = next;
+}
+
+function renderSaWeightSliders() {
+  const el = document.getElementById('saWeightSliders');
+  if (!el) return;
+  el.innerHTML = SA_WEIGHT_KEYS.map(({ key, label }) => `
+    <div class="sa-weight-item">
+      <div class="sa-weight-label-row"><span>${label}</span><strong>${saWeights[key]}%</strong></div>
+      <input type="range" class="sa-weight-slider" min="0" max="100" step="1" value="${saWeights[key]}" data-key="${key}" />
+    </div>
+  `).join('');
+  el.querySelectorAll('.sa-weight-slider').forEach(slider => {
+    slider.addEventListener('input', () => {
+      saAdjustWeight(slider.dataset.key, +slider.value);
+      saStrategy = 'custom';
+      renderSaStrategyPresets();
+      renderSaWeightSliders();
+      renderSaTable();
+    });
+    slider.addEventListener('change', saveSaSettings);
+  });
+}
+
+async function loadSaWeightsFromDB() {
+  try {
+    const res = await fetch('/api/db/settings/stockAnalysisSettings');
+    if (res.ok) {
+      const saved = JSON.parse((await res.json()).value);
+      if (saved.strategy && SA_STRATEGY_PRESETS[saved.strategy]) saStrategy = saved.strategy;
+      if (saved.weights) saWeights = { ...saPresetWeights('custom'), ...saved.weights };
+    }
+  } catch {}
+}
+
+function saveSaSettings() {
+  fetch('/api/db/settings/stockAnalysisSettings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify({ strategy: saStrategy, weights: saWeights }) }),
+  }).catch(() => {});
+}
+
+// ─── 검색·필터 ──────────────────────────────────────────
+function initSaControls() {
+  const judgmentSelect = document.getElementById('saJudgmentFilter');
+  SA_JUDGMENTS.forEach(j => {
+    const opt = document.createElement('option');
+    opt.value = j.key;
+    opt.textContent = j.label;
+    judgmentSelect.appendChild(opt);
+  });
+
+  document.getElementById('saSearchInput').addEventListener('input', e => {
+    saFilters.q = e.target.value;
+    renderSaTable();
+  });
+  document.getElementById('saCountryFilter').addEventListener('change', e => {
+    saFilters.country = e.target.value;
+    renderSaTable();
+  });
+  judgmentSelect.addEventListener('change', e => {
+    saFilters.judgment = e.target.value;
+    renderSaTable();
+  });
+  document.getElementById('saMinScore').addEventListener('input', e => {
+    saFilters.minScore = e.target.value === '' ? null : +e.target.value;
+    renderSaTable();
+  });
+  document.getElementById('saMinUpside').addEventListener('input', e => {
+    saFilters.minUpside = e.target.value === '' ? null : +e.target.value;
+    renderSaTable();
+  });
+  document.getElementById('saResetFiltersBtn').addEventListener('click', () => {
+    saFilters = { q: '', country: 'all', judgment: 'all', minScore: null, minUpside: null };
+    document.getElementById('saSearchInput').value = '';
+    document.getElementById('saCountryFilter').value = 'all';
+    judgmentSelect.value = 'all';
+    document.getElementById('saMinScore').value = '';
+    document.getElementById('saMinUpside').value = '';
+    renderSaTable();
+  });
+  document.getElementById('saRefreshBtn').addEventListener('click', () => {
+    loadStockAnalysisData();
+    const btn = document.getElementById('saRefreshBtn');
+    btn.classList.remove('spinning');
+    void btn.offsetWidth; // 애니메이션 재시작을 위한 리플로우 강제
+    btn.classList.add('spinning');
+  });
+  document.getElementById('saOnlySelectedToggle').addEventListener('change', e => {
+    saOnlySelected = e.target.checked;
+    renderSaTable();
+  });
+  document.getElementById('saClearSelectionBtn').addEventListener('click', () => {
+    saSelectedSymbols.clear();
+    if (saOnlySelected) {
+      saOnlySelected = false;
+      document.getElementById('saOnlySelectedToggle').checked = false;
+    }
+    renderSaTable();
+  });
+}
+
+// ─── 종목 상세 패널 ─────────────────────────────────────
+function saMetricTabHTML(title, score, metricPairs, reasons) {
+  return `
+    <div class="sa-section-title">${title} 점수: ${score != null ? score.toFixed(1) : '—'}</div>
+    <table class="sa-metric-table">
+      ${metricPairs.map(([label, val]) => `<tr><td>${label}</td><td>${val}</td></tr>`).join('')}
+    </table>
+    ${reasons && reasons.length
+      ? `<ul class="sa-reason-list">${reasons.map(r => `<li>${r}</li>`).join('')}</ul>`
+      : '<p class="sa-no-data">근거로 삼을 데이터가 부족합니다.</p>'}
+  `;
+}
+
+function saOverviewTabHTML(row) {
+  const scores = row.scores || {};
+  const bars = SA_WEIGHT_KEYS.map(({ key, label }) => `
+    <div class="sa-weight-item">
+      <div class="sa-weight-label-row"><span>${label}</span><strong>${scores[key] != null ? scores[key].toFixed(1) : '—'}</strong></div>
+      <div class="sa-score-bar" style="width:100%"><div class="sa-score-bar-fill ${saScoreGrade(scores[key])}" style="width:${scores[key] ?? 0}%"></div></div>
+    </div>
+  `).join('');
+
+  const posList = row.reasons?.positive?.length
+    ? `<ul class="sa-reason-list">${row.reasons.positive.map(t => `<li class="pos">${t}</li>`).join('')}</ul>`
+    : '<p class="sa-no-data">뚜렷한 긍정 요인이 확인되지 않았습니다.</p>';
+  const riskList = row.reasons?.risk?.length
+    ? `<ul class="sa-reason-list">${row.reasons.risk.map(t => `<li class="risk">${t}</li>`).join('')}</ul>`
+    : '<p class="sa-no-data">뚜렷한 위험 요인이 확인되지 않았습니다.</p>';
+
+  return `
+    <div class="sa-section-title">카테고리별 점수</div>
+    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:16px;">${bars}</div>
+    <div class="sa-section-title">긍정 요인</div>
+    ${posList}
+    <div class="sa-section-title">위험 요인</div>
+    ${riskList}
+  `;
+}
+
+function saFairValueTabHTML(row) {
+  const fv = row.fairValue || {};
+  if (!fv.methods || !fv.methods.length) {
+    return `<p class="sa-no-data">적정가를 산출할 데이터가 부족합니다.</p>` +
+      (row.analyst?.targetMean != null
+        ? `<p class="sa-no-data">애널리스트 평균 목표가: ${formatPrice(row.analyst.targetMean, row.currency)}</p>`
+        : '');
+  }
+
+  const rowsHTML = fv.methods.map(m => {
+    const diff = row.price ? (m.value - row.price) / row.price * 100 : null;
+    return `<tr><td>${m.label}</td><td>${formatPrice(m.value, row.currency)}</td><td>${diff != null ? (diff >= 0 ? '+' : '') + diff.toFixed(1) + '%' : '—'}</td></tr>`;
+  }).join('');
+
+  let rangeHTML = '';
+  if (fv.bear != null && fv.bull != null && row.price != null && fv.bull > fv.bear) {
+    const lo = Math.min(fv.bear, row.price) * 0.95;
+    const hi = Math.max(fv.bull, row.price) * 1.05;
+    const pct = v => Math.max(0, Math.min(100, (v - lo) / (hi - lo) * 100));
+    rangeHTML = `
+      <div class="sa-fv-range-wrap">
+        <div class="sa-fv-range-track">
+          <div class="sa-fv-range-fill" style="left:${pct(fv.bear)}%; right:${100 - pct(fv.bull)}%"></div>
+          <div class="sa-fv-range-dot" style="left:${pct(row.price)}%"></div>
+          <div class="sa-fv-range-marker current" style="left:${pct(row.price)}%">현재가</div>
+        </div>
+        <div class="sa-fv-range-labels">
+          <span>Bear ${formatPrice(fv.bear, row.currency)}</span>
+          <span>Base ${fv.base != null ? formatPrice(fv.base, row.currency) : '—'}</span>
+          <span>Bull ${formatPrice(fv.bull, row.currency)}</span>
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div class="sa-section-title">적정가 산출 방식</div>
+    <table class="sa-fv-table">
+      <thead><tr><th>방식</th><th>적정가</th><th>현재가 대비</th></tr></thead>
+      <tbody>${rowsHTML}</tbody>
+    </table>
+    ${rangeHTML}
+    ${row.analyst?.numberOfAnalysts ? `<p class="sa-no-data">애널리스트 ${row.analyst.numberOfAnalysts}명 평균 · 등급 ${row.analyst.recommendation || '—'}</p>` : ''}
+  `;
+}
+
+function renderSaDetailTab(row, tab) {
+  const body = document.getElementById('saDetailBody');
+  if (tab === 'overview') {
+    body.innerHTML = saOverviewTabHTML(row);
+  } else if (tab === 'valuation') {
+    body.innerHTML = saMetricTabHTML('가치평가', row.scores?.value, [
+      ['PER', saNumHTML(row.valuation?.pe)],
+      ['Forward PER', saNumHTML(row.valuation?.forwardPe)],
+      ['PEG', saNumHTML(row.valuation?.peg, 2)],
+      ['PBR', saNumHTML(row.valuation?.pb, 2)],
+      ['PSR', saNumHTML(row.valuation?.ps, 2)],
+      ['EV/EBITDA', saNumHTML(row.valuation?.evEbitda, 1)],
+      ['FCF Yield', saPctPlain(row.valuation?.fcfYield)],
+    ], row.scoreReasons?.value);
+  } else if (tab === 'growth') {
+    body.innerHTML = saMetricTabHTML('성장성', row.scores?.growth, [
+      ['매출 성장률', row.growth?.revenueGrowth != null ? (row.growth.revenueGrowth >= 0 ? '+' : '') + row.growth.revenueGrowth.toFixed(1) + '%' : '—'],
+      ['이익 성장률', row.growth?.earningsGrowth != null ? (row.growth.earningsGrowth >= 0 ? '+' : '') + row.growth.earningsGrowth.toFixed(1) + '%' : '—'],
+      ['향후 EPS 성장률(추정)', row.growth?.forwardEpsGrowth != null ? (row.growth.forwardEpsGrowth >= 0 ? '+' : '') + row.growth.forwardEpsGrowth.toFixed(1) + '%' : '—'],
+    ], row.scoreReasons?.growth);
+  } else if (tab === 'quality') {
+    body.innerHTML = saMetricTabHTML('수익성', row.scores?.quality, [
+      ['매출총이익률', saPctPlain(row.profitability?.grossMargin)],
+      ['영업이익률', saPctPlain(row.profitability?.operatingMargin)],
+      ['순이익률', saPctPlain(row.profitability?.netMargin)],
+      ['FCF Margin', saPctPlain(row.profitability?.fcfMargin)],
+      ['ROE', saPctPlain(row.profitability?.roe)],
+      ['ROA', saPctPlain(row.profitability?.roa)],
+    ], row.scoreReasons?.quality);
+  } else if (tab === 'stability') {
+    body.innerHTML = saMetricTabHTML('재무안정성', row.scores?.stability, [
+      ['부채비율(D/E)', row.stability?.debtToEquity != null ? row.stability.debtToEquity.toFixed(0) + '%' : '—'],
+      ['유동비율', saNumHTML(row.stability?.currentRatio, 2)],
+      ['당좌비율', saNumHTML(row.stability?.quickRatio, 2)],
+      ['Net Debt/EBITDA', saNumHTML(row.stability?.netDebtToEbitda, 2)],
+    ], row.scoreReasons?.stability);
+  } else if (tab === 'shareholder') {
+    body.innerHTML = saMetricTabHTML('주주환원', row.scores?.shareholderReturn, [
+      ['배당수익률', row.shareholderReturn?.dividendYield != null ? row.shareholderReturn.dividendYield.toFixed(2) + '%' : '—'],
+      ['배당성향', row.shareholderReturn?.payoutRatio != null ? row.shareholderReturn.payoutRatio.toFixed(0) + '%' : '—'],
+    ], row.scoreReasons?.shareholderReturn);
+  } else if (tab === 'fairvalue') {
+    body.innerHTML = saFairValueTabHTML(row);
+  }
+}
+
+function openSaDetail(symbol) {
+  const row = saEnrichedRows().find(r => r.symbol === symbol);
+  if (!row) return;
+  saSelectedSymbol = symbol;
+
+  document.getElementById('saDetailSymbol').textContent = row.symbol;
+  document.getElementById('saDetailName').textContent = row.name || '';
+  const badge = document.getElementById('saDetailJudgment');
+  badge.className = `sa-judgment-badge jd-${row.judgment.key}`;
+  badge.textContent = row.judgment.label;
+
+  const summaryItem = (label, value) =>
+    `<div class="sa-summary-item"><span class="sa-summary-label">${label}</span><span class="sa-summary-value">${value}</span></div>`;
+  document.getElementById('saDetailSummary').innerHTML = [
+    summaryItem('현재가', row.price != null ? formatPrice(row.price, row.currency) : '—'),
+    summaryItem('등락률', row.changePercent != null ? (row.changePercent >= 0 ? '+' : '') + row.changePercent.toFixed(2) + '%' : '—'),
+    summaryItem('종합점수', row.totalScore != null ? row.totalScore.toFixed(1) : '—'),
+    summaryItem('기준 적정가', row.fairValue?.base != null ? formatPrice(row.fairValue.base, row.currency) : '—'),
+    summaryItem('상승여력', row.fairValue?.upsidePercent != null ? (row.fairValue.upsidePercent >= 0 ? '+' : '') + row.fairValue.upsidePercent.toFixed(1) + '%' : '—'),
+    summaryItem('섹터', row.sectorEtf || row.sector || '—'),
+  ].join('');
+
+  document.querySelectorAll('.sa-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'overview'));
+  renderSaDetailTab(row, 'overview');
+
+  document.getElementById('saDetailPanel').classList.remove('hidden');
+  document.getElementById('saOverlay').classList.remove('hidden');
+}
+
+function closeSaDetail() {
+  document.getElementById('saDetailPanel').classList.add('hidden');
+  document.getElementById('saOverlay').classList.add('hidden');
+  saSelectedSymbol = null;
+}
+
+function initSaDetailPanel() {
+  document.getElementById('saDetailClose').addEventListener('click', closeSaDetail);
+  document.getElementById('saOverlay').addEventListener('click', closeSaDetail);
+  document.getElementById('saDetailTabs').addEventListener('click', e => {
+    const btn = e.target.closest('.sa-tab-btn');
+    if (!btn) return;
+    document.querySelectorAll('.sa-tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const row = saEnrichedRows().find(r => r.symbol === saSelectedSymbol);
+    if (row) renderSaDetailTab(row, btn.dataset.tab);
+  });
+}
+
+// ─── 초기화 ─────────────────────────────────────────────
+async function initStockAnalysisView() {
+  document.getElementById('stockAnalysisBtn').addEventListener('click', toggleStockAnalysisView);
+  initSaControls();
+  initSaDetailPanel();
+  await initSaCollapseToggle();
+  await loadSaWeightsFromDB();
+  renderSaStrategyPresets();
+  renderSaWeightSliders();
+}
+
+// 분석 요약(KPI) · 검색·필터 · 투자성향 가중치 영역을 한 번에 접고 펼치는 토글
+async function initSaCollapseToggle() {
+  const toggle  = document.getElementById('saCollapseToggle');
+  const arrow   = document.getElementById('saCollapseArrow');
+  const section = document.getElementById('saCollapsibleSection');
+  if (!toggle || !section) return;
+
+  let collapsed = false;
+  const apply = () => {
+    section.classList.toggle('hidden', collapsed);
+    if (arrow) arrow.textContent = collapsed ? '▸' : '▾';
+  };
+
+  try {
+    const res = await fetch('/api/db/settings/saControlsCollapsed');
+    if (res.ok) collapsed = (await res.json()).value === '1';
+  } catch {}
+  apply();
+
+  toggle.addEventListener('click', () => {
+    collapsed = !collapsed;
+    apply();
+    fetch('/api/db/settings/saControlsCollapsed', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: collapsed ? '1' : '0' }),
+    }).catch(() => {});
   });
 }
