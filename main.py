@@ -6,7 +6,9 @@ import httpx
 import asyncio
 import time
 import csv
+import hashlib
 import sqlite3
+import threading
 import json
 import math
 import os
@@ -86,6 +88,8 @@ class StocksPayload(BaseModel):
 
 class SettingPayload(BaseModel):
     value: str
+    # 클라이언트가 마지막으로 읽은 값의 rev. 지정 시 그 사이 DB가 바뀌었으면 409로 거부(다른 기기 변경 덮어쓰기 방지)
+    base_rev: str | None = None
 
 class FeedbackPayload(BaseModel):
     content: str
@@ -1319,18 +1323,29 @@ def db_get_setting(key: str):
         row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return {"key": key, "value": row["value"]}
+    return {"key": key, "value": row["value"], "rev": _setting_rev(row["value"])}
+
+
+def _setting_rev(value: str) -> str:
+    return hashlib.sha1(value.encode('utf-8')).hexdigest()[:16]
+
+
+_settings_lock = threading.Lock()
 
 
 @app.put("/api/db/settings/{key}")
 def db_save_setting(key: str, payload: SettingPayload):
-    with get_db() as conn:
+    with _settings_lock, get_db() as conn:
+        if payload.base_rev is not None:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+            if row is not None and _setting_rev(row["value"]) != payload.base_rev:
+                raise HTTPException(status_code=409, detail="Setting changed elsewhere")
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, payload.value),
         )
         conn.commit()
-    return {"ok": True}
+    return {"ok": True, "rev": _setting_rev(payload.value)}
 
 
 @app.get("/api/feedback")

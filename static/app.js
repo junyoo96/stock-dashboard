@@ -3747,12 +3747,43 @@ function mmGenId(prefix) {
 
 // ── Storage ──────────────────────────────────────────────────
 
-function mmSave() {
-  fetch('/api/db/settings/mindmapData', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: JSON.stringify(mmData) }),
-  }).catch(() => {});
+// 마지막으로 DB에서 읽거나 저장한 버전. 저장 시 함께 보내 그 사이 다른 기기·탭에서
+// 바뀌었으면 서버가 409로 거부 → 덮어쓰지 않고 최신 데이터를 다시 불러옴
+let mmRev = null;
+let mmSaving = false;
+let mmSavePending = false;
+
+async function mmSave() {
+  if (mmSaving) { mmSavePending = true; return; }
+  mmSaving = true;
+  try {
+    do {
+      mmSavePending = false;
+      const res = await fetch('/api/db/settings/mindmapData', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: JSON.stringify(mmData), base_rev: mmRev }),
+      });
+      if (res.status === 409) {
+        await mmLoad();
+        mmRender();
+        mmNotice('다른 기기에서 마인드맵이 변경되어 최신 내용으로 갱신했습니다. 방금 변경은 다시 해주세요.');
+        break;
+      }
+      if (res.ok) mmRev = (await res.json()).rev ?? null;
+    } while (mmSavePending);
+  } catch {
+  } finally {
+    mmSaving = false;
+  }
+}
+
+function mmNotice(msg) {
+  const el = document.createElement('div');
+  el.className = 'mm-notice';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
 }
 
 async function mmLoad() {
@@ -3761,6 +3792,7 @@ async function mmLoad() {
     if (res.ok) {
       const d = await res.json();
       if (d.value) mmData = JSON.parse(d.value);
+      mmRev = d.rev ?? null;
     }
   } catch {}
 
@@ -3974,6 +4006,7 @@ function mmRender() {
   mmData.categories.forEach(cat  => canvas.appendChild(mmMakeCatEl(cat)));
   mmData.stocks.filter(s => !s.categoryId).forEach(s => canvas.appendChild(mmMakeStockEl(s)));
   mmRenderEdges();
+  mmUpdateHighlightCount();
 }
 
 function mmRenderEdges() {
@@ -4205,7 +4238,40 @@ function mmMakeStockEl(stock) {
   });
 
   mmBindHandlers(div);
+  mmApplyHighlight(div);
   return div;
+}
+
+// ── 키워드 하이라이트: 태그·종목·분류명에 키워드가 포함되면 노란색 표시 ──
+// 카드는 수익률 갱신·태그 수정 때마다 새로 만들어지므로, 생성 시점(mmMake*El)과
+// 입력 시점 양쪽에서 적용
+let mmHlKeyword = '';
+
+function mmHlMatch(text) {
+  return !!mmHlKeyword && String(text ?? '').toLowerCase().includes(mmHlKeyword);
+}
+
+function mmApplyHighlight(root = document.getElementById('mmCanvas')) {
+  if (!root) return;
+  root.querySelectorAll('.mm-tag').forEach(t => t.classList.toggle('mm-hl-tag', mmHlMatch(t.textContent)));
+  root.querySelectorAll('.mm-cat-name').forEach(n => n.classList.toggle('mm-hl-tag', mmHlMatch(n.textContent)));
+  const stockEls = [root, ...root.querySelectorAll('.mm-node, .mm-cat-stock')]
+    .filter(el => el.matches?.('.mm-node, .mm-cat-stock'));
+  stockEls.forEach(el => {
+    const s = mmData.stocks.find(x => x.id === el.dataset.mmId);
+    const hit = !!s && (mmHlMatch(s.name) || mmHlMatch(s.ticker) || (s.tags || []).some(mmHlMatch));
+    el.classList.toggle('mm-hl-stock', hit);
+  });
+}
+
+function mmUpdateHighlightCount() {
+  const el = document.getElementById('mmHighlightCount');
+  if (!el) return;
+  if (!mmHlKeyword) { el.classList.add('hidden'); return; }
+  const n = mmData.stocks.filter(s =>
+    mmHlMatch(s.name) || mmHlMatch(s.ticker) || (s.tags || []).some(mmHlMatch)).length;
+  el.textContent = `${n}개`;
+  el.classList.remove('hidden');
 }
 
 function mmMakeCatEl(cat) {
@@ -4323,6 +4389,7 @@ function mmMakeCatEl(cat) {
   });
 
   mmBindHandlers(div);
+  mmApplyHighlight(div);
   return div;
 }
 
@@ -4471,7 +4538,8 @@ async function mmFetchReturns(stockId, symbol) {
     else if (s.drawdownPct === undefined) s.drawdownPct = null;
     if ('rsi' in ath) s.rsi = ath.rsi;
     else if (s.rsi === undefined) s.rsi = null;
-    mmSave();
+    // 수익률은 열 때마다 새로 받는 표시용 값이라 저장하지 않음
+    // (종목마다 전체 마인드맵을 저장하면 그 사이 다른 곳에서 추가한 종목을 덮어씀)
     // Re-render the affected element — 단, 지금 드래그/롱프레스 중인 카드라면
     // 건드리지 않음 (재렌더링하면 터치 대상 DOM이 사라져 제스처가 끊김)
     const canvas = document.getElementById('mmCanvas');
@@ -4812,8 +4880,20 @@ async function initMindmap() {
       document.querySelector('main').classList.add('hidden');
       document.getElementById('mindmapView').classList.remove('hidden');
       document.getElementById('mindmapBtn').classList.add('active');
-      requestAnimationFrame(() => { mmResetView(); mmRender(); mmFixStockNames(); mmRefreshAllReturns(); });
+      // 다른 기기·탭에서 바뀐 내용을 예전 메모리 데이터로 덮어쓰지 않도록 열 때마다 DB에서 다시 읽음
+      requestAnimationFrame(async () => {
+        await mmLoad();
+        mmResetView(); mmRender(); mmFixStockNames(); mmRefreshAllReturns();
+      });
     }
+  });
+
+  // 마인드맵을 띄워 둔 채 탭/앱을 떠났다 돌아온 경우에도 최신 데이터로 갱신
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState !== 'visible') return;
+    if (document.getElementById('mindmapView').classList.contains('hidden')) return;
+    await mmLoad();
+    mmRender();
   });
 
 
@@ -4953,6 +5033,25 @@ async function initMindmap() {
   document.addEventListener('click', e => {
     if (!e.target.closest('.mm-search-wrap')) sd.classList.add('hidden');
   });
+
+  // 태그·종목 하이라이트 (종목 추가 검색창과 별개)
+  const hi = document.getElementById('mmHighlightInput');
+  hi.addEventListener('input', () => {
+    mmHlKeyword = hi.value.trim().toLowerCase();
+    mmApplyHighlight();
+    mmUpdateHighlightCount();
+  });
+  hi.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { hi.value = ''; hi.dispatchEvent(new Event('input')); }
+  });
+
+  // 캔버스는 터치 제스처를 자체 처리(preventDefault)해서 눌러도 검색창 포커스가 안 풀림
+  // → 모바일에서 숨겨둔 다른 검색창·줌 버튼이 돌아오도록 직접 포커스 해제 + 결과 목록 닫기
+  document.getElementById('mmViewport').addEventListener('pointerdown', () => {
+    const a = document.activeElement;
+    if (a && a.tagName === 'INPUT' && a.closest('.mm-toolbar')) a.blur();
+    sd.classList.add('hidden');
+  }, true);
 }
 
 // ─── 피드백 게시판 ──────────────────────────────────────────

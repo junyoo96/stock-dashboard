@@ -2152,6 +2152,52 @@ main {
   outline: none;
 }
 .mm-search-wrap input:focus { border-color: var(--accent); }
+.mm-search-wrap { transition: max-width 0.2s ease; }
+/* 입력 중이거나 검색 결과가 떠 있는 동안 가로로 확장
+   (결과 클릭 순간 포커스가 빠져도 줄어들지 않도록 드롭다운 표시 여부도 함께 봄) */
+.mm-search-wrap:focus-within,
+.mm-search-wrap:has(.dropdown:not(.hidden)) { max-width: 480px; }
+
+/* 태그·종목 하이라이트 검색 */
+.mm-hl-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.mm-hl-wrap input {
+  width: 122px;  /* 한글 6글자 + 지우기(✕) 버튼 */
+  padding: 6px 6px 6px 8px;
+  border: 1px solid rgba(255,217,61,0.45);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: 13px;
+  box-sizing: border-box;
+  outline: none;
+}
+.mm-hl-wrap input:focus { border-color: #ffd93d; }
+.mm-hl-count {
+  font-size: 11px;
+  white-space: nowrap;
+  font-weight: 700;
+  color: #ffd93d;
+  pointer-events: none;
+}
+.mm-tag.mm-hl-tag,
+.mm-cat-name.mm-hl-tag {
+  background: #ffd93d;
+  color: #1a1a1a;
+  font-weight: 700;
+}
+.mm-cat-name.mm-hl-tag { padding: 0 4px; border-radius: 4px; }
+/* 축소 보기에서도 눈에 띄도록 굵은 테두리 + 글로우 + 배경 */
+.mm-node.mm-hl-stock,
+.mm-cat-stock.mm-hl-stock {
+  border-color: #ffd93d;
+  background: rgba(255,217,61,0.22);
+  box-shadow: 0 0 0 3px rgba(255,217,61,0.85), 0 0 18px rgba(255,217,61,0.6);
+}
 
 .mm-zoom-controls {
   display: flex;
@@ -2176,6 +2222,29 @@ main {
   color: var(--muted);
   min-width: 40px;
   text-align: center;
+}
+
+/* 모바일: 1줄 = 메뉴·도구 버튼, 2줄 = 종목검색 + 태그검색 + 확대축소 */
+@media (max-width: 600px) {
+  .mm-toolbar { gap: 6px; padding: 8px 12px; }
+  .mm-toolbar::after { content: ''; flex-basis: 100%; order: 1; }  /* 강제 줄바꿈 */
+  .mm-search-wrap, .mm-hl-wrap, .mm-zoom-controls { order: 2; }
+  .mm-search-wrap { flex: 1 1 0; min-width: 0; max-width: none; }
+  .mm-hl-wrap { gap: 4px; }
+  .mm-zoom-controls { margin-left: 0; gap: 3px; }
+  .mm-zoom-btn { width: 26px; height: 26px; font-size: 14px; }
+  #mmZoomPct { display: none; }  /* 공간 확보 — 핀치 줌으로 조절 */
+
+  /* 한쪽 검색창을 쓰는 동안에는 다른 검색창·줌 버튼을 숨기고 그 검색창이 줄 전체를 사용.
+     캔버스 등 바깥을 누르면(포커스 해제) 원래 배치로 복귀 */
+  .mm-toolbar:has(.mm-search-wrap:focus-within) .mm-hl-wrap,
+  .mm-toolbar:has(.mm-search-wrap:focus-within) .mm-zoom-controls,
+  .mm-toolbar:has(.mm-search-wrap .dropdown:not(.hidden)) .mm-hl-wrap,
+  .mm-toolbar:has(.mm-search-wrap .dropdown:not(.hidden)) .mm-zoom-controls,
+  .mm-toolbar:has(.mm-hl-wrap:focus-within) .mm-search-wrap,
+  .mm-toolbar:has(.mm-hl-wrap:focus-within) .mm-zoom-controls { display: none; }
+  .mm-hl-wrap:focus-within { flex: 1 1 auto; }
+  .mm-hl-wrap:focus-within input { flex: 1; width: auto; min-width: 0; }
 }
 
 /* Canvas */
@@ -2626,6 +2695,22 @@ main {
 }
 
 /* Custom dialog */
+.mm-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: #2a2e3f;
+  border: 1px solid #ffd93d;
+  color: #e6e8f0;
+  font-size: 13px;
+  z-index: 9100;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
 .mm-dialog-overlay {
   position: fixed;
   inset: 0;
