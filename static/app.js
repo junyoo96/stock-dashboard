@@ -623,7 +623,18 @@ const MACRO_CORR_SERIES = [
   { key: 'WTI',    label: 'WTI 원유',       color: '#f59e0b', fmtCur: v => `$${v.toFixed(2)}` },
   { key: 'SPX',    label: 'S&P 500',        color: '#4f7eff' },
   { key: 'NASDAQ', label: '나스닥',         color: '#cc5de8' },
+  { key: 'FNG',    label: 'Fear & Greed',   color: '#22d3ee', isPoint: true, yMin: 0, yMax: 100,
+    fmtCur: v => `${v.toFixed(0)} ${fngRatingLabel(v)}` },
 ];
+
+// CNN Fear & Greed 구간 기준 (0~25 극단적 공포 … 75~100 극단적 탐욕)
+function fngRatingLabel(v) {
+  if (v < 25) return '극단적 공포';
+  if (v < 45) return '공포';
+  if (v <= 55) return '중립';
+  if (v <= 75) return '탐욕';
+  return '극단적 탐욕';
+}
 
 let macroCorrChartInstances = {};
 let macroCorrHeight = 110;
@@ -701,16 +712,20 @@ async function loadMacroCorrelationChart(period = '1y') {
   active.forEach((s, i) => {
     const vals   = series[s.key];
     const isLast = i === active.length - 1;
-    const first  = vals[0];
-    const last   = vals[vals.length - 1];
-    // 금리는 변화율이 아닌 금리 자체의 차이(%p)로 표시
-    const chg    = s.isYield ? last - first
+    // Fear & Greed는 기간 앞쪽이 비어(null) 있을 수 있어 첫/끝 유효값 기준
+    const valid  = vals.filter(v => v != null);
+    const first  = valid[0];
+    const last   = valid[valid.length - 1];
+    // 금리는 변화율이 아닌 금리 자체의 차이(%p), Fear & Greed는 점수 차이(pt)로 표시
+    const chg    = s.isYield || s.isPoint ? last - first
                  : first !== 0 ? (last - first) / Math.abs(first) * 100 : 0;
     const sign   = chg >= 0 ? '+' : '';
     const state  = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
     const valEl  = document.getElementById(`mcVal-${s.key}`);
     if (valEl) {
-      valEl.textContent = s.isYield ? `${sign}${chg.toFixed(2)}%p` : `${sign}${chg.toFixed(1)}%`;
+      valEl.textContent = s.isYield ? `${sign}${chg.toFixed(2)}%p`
+                        : s.isPoint ? `${sign}${chg.toFixed(0)}pt`
+                        : `${sign}${chg.toFixed(1)}%`;
       valEl.classList.add(state);
     }
     const curEl = document.getElementById(`mcCur-${s.key}`);
@@ -779,6 +794,8 @@ async function loadMacroCorrelationChart(period = '1y') {
           },
           y: {
             position: 'right',
+            min: s.yMin,
+            max: s.yMax,
             grid: { color: '#252836' },
             ticks: { color: '#7b7f97', font: { size: 9 }, maxTicksLimit: 4 },
             // 패널마다 눈금 자릿수가 달라도 플롯 폭이 같도록 축 폭 고정
@@ -2524,6 +2541,7 @@ function initMacroAnalysisView() {
   initSectorChartToggle();
   initMacroCorrChartToggle();
   initMacroCorrHeightBtns();
+  initLiquidityToggle();
 
   // 저장된 섹션 순서 복원 (DB 우선, fallback: localStorage)
   const view = document.getElementById('macroAnalysisView');
@@ -2538,6 +2556,12 @@ function initMacroAnalysisView() {
       const sec = view.querySelector(`.mav-section[data-section="${key}"]`);
       if (sec) view.appendChild(sec);
     });
+    // 저장된 순서에 없는 새 섹션은 맨 위로 밀려 올라가지 않도록 맨 아래로
+    if (saved.length) {
+      view.querySelectorAll('.mav-section[data-section]').forEach(sec => {
+        if (!saved.includes(sec.dataset.section)) view.appendChild(sec);
+      });
+    }
   }
   restoreMavOrder();
 
@@ -2624,7 +2648,270 @@ function toggleMacroAnalysisView() {
     loadIsmPmiChart();
     loadLeiChart();
     loadTgaChart();
+    loadLiquidityChart(document.querySelector('.liq-pbtn.active')?.dataset.p || '1y');
   }
+}
+
+// ─── 유동성 모니터 (Fed 총자산·지급준비금·TGA·단기자금시장 금리·신용스프레드) ───
+// good: 값이 오르는 게 유동성에 우호적이면 'up', 악화면 'down' → 변화량 색상(초록/빨강) 결정
+// chg: 'pct' = 기간 변화율, 'bp' = 금리·스프레드 차이(bp)
+const LIQ_PANELS = [
+  { id: 'fed',   title: 'Fed 총자산',  good: 'up',   chg: 'pct', fmt: v => `$${v.toFixed(2)}T`,
+    lines: [{ key: 'WALCL', label: 'Fed 총자산', color: '#4f7eff' }] },
+  { id: 'res',   title: '지급준비금',  good: 'up',   chg: 'pct', fmt: v => `$${v.toFixed(2)}T`,
+    lines: [{ key: 'WRESBAL', label: '지급준비금', color: '#69db7c' }] },
+  { id: 'tga',   title: 'TGA',         good: 'down', chg: 'pct', fmt: v => `$${v.toFixed(0)}B`,
+    lines: [{ key: 'WTREGEN', label: 'TGA', color: '#f59e0b' }] },
+  { id: 'rates', title: '단기자금시장 금리', fmt: v => `${v.toFixed(2)}%`,
+    lines: [
+      { key: 'SOFR',          label: 'SOFR',   color: '#ff6b6b' },
+      { key: 'EFFR',          label: 'EFFR',   color: '#cc5de8' },
+      { key: 'IORB',          label: 'IORB',   color: '#e9ecef', dash: [4, 3] },
+      { key: 'RRPONTSYAWARD', label: 'ON RRP', color: '#22d3ee', dash: [4, 3] },
+    ] },
+  { id: 'hy',    title: '하이일드 스프레드 (HY OAS)', good: 'down', chg: 'bp', fmt: v => `${v.toFixed(2)}%`,
+    lines: [{ key: 'BAMLH0A0HYM2', label: 'HY OAS', color: '#ff922b' }] },
+  { id: 'ig',    title: '투자등급 스프레드 (IG OAS)', good: 'down', chg: 'bp', fmt: v => `${v.toFixed(2)}%`,
+    lines: [{ key: 'BAMLC0A0CM', label: 'IG OAS', color: '#fcc419' }] },
+];
+
+// 패널 제목 옆 ⓘ 아이콘을 누르면 뜨는 지표 설명 (종목분석 표의 설명 툴팁 재사용)
+const LIQ_HELP = {
+  fed:   `Fed 총자산 (WALCL, 매주 수요일 기준): 연준 대차대조표 규모입니다. 늘면 양적완화(QE), 줄면 양적긴축(QT)입니다.
+다만 총자산이 곧바로 시장 유동성은 아닙니다. 실제로 은행 시스템에 풀린 돈은 지급준비금·TGA·역레포 흐름에 따라 달라지므로 아래 지표들과 함께 봐야 합니다.`,
+  res:   `지급준비금 (WRESBAL): 은행들이 연준에 예치한 돈으로, 금융 시스템의 실질 유동성을 가장 직접적으로 보여줍니다.
+줄어들면 유동성 악화입니다. 연준이 '충분한(ample)' 수준을 유지하려고 지켜보는 지표이며, 크게 줄면 2019년 9월처럼 단기 레포 금리가 급등할 수 있습니다.`,
+  tga:   `TGA (재무부 일반계좌, WTREGEN): 미 재무부가 연준에 둔 현금 계좌입니다.
+국채 발행·세금 납부로 TGA가 늘면 그만큼 은행 지급준비금이 빠져나가 시장 유동성이 줄고, 재무부가 돈을 쓰면서 TGA가 줄면 유동성이 다시 풀립니다. 증가 = 유동성 흡수.`,
+  rates: `단기자금시장 금리
+• SOFR: 국채 담보 익일물 레포 금리 (실제 단기자금 조달 비용)
+• EFFR: 은행 간 무담보 익일물 연방기금 실효금리
+• IORB: 연준이 지급준비금에 주는 이자 (점선)
+• ON RRP: 연준 역레포 금리, 사실상 금리 하단 (점선)
+SOFR이 IORB보다 높아지면(SOFR−IORB > 0bp) 지급준비금이 부족해 단기자금 조달이 빡빡하다는 신호입니다.`,
+  hy:    `하이일드 스프레드 (ICE BofA US High Yield OAS): 투기등급 회사채 금리 − 같은 만기 국채 금리입니다.
+신용 위험에 대한 시장의 걱정을 보여줍니다. 확대 = 위험회피·신용경색, 축소 = 위험선호. 급격한 확대는 주식시장 조정과 함께 나타나는 경우가 많습니다.
+(FRED는 최근 3년치만 제공)`,
+  ig:    `투자등급 스프레드 (ICE BofA US Corporate OAS): 투자등급(BBB 이상) 회사채 금리 − 국채 금리입니다.
+하이일드보다 움직임은 작지만 우량 기업의 자금 조달 여건을 보여줍니다. 확대 = 신용 여건 악화.
+(FRED는 최근 3년치만 제공)`,
+};
+
+let liqCharts = [];
+let liqReqSeq = 0;
+
+// 시간순 배열에서 t 이하 마지막 점 인덱스 (주간·일간 시리즈가 섞여 있어 index 동기화 대신 시각 기준)
+function liqIndexAt(pts, t) {
+  let lo = 0, hi = pts.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].x <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return ans;
+}
+
+async function loadLiquidityChart(period = '1y') {
+  const seq = ++liqReqSeq;
+  const grid = document.getElementById('liqGrid');
+  if (!grid) return;
+  let data;
+  try {
+    const res = await fetch(`/api/liquidity?period=${period}`);
+    if (!res.ok) throw new Error();
+    data = await res.json();
+  } catch {
+    if (seq === liqReqSeq) grid.innerHTML = '<div class="yc-loading">데이터를 불러오지 못했습니다.</div>';
+    return;
+  }
+  if (seq !== liqReqSeq) return;
+
+  const pts = {};
+  for (const [k, rows] of Object.entries(data.series || {})) {
+    pts[k] = rows.map(r => ({ x: new Date(r.t + 'T00:00:00').getTime(), y: r.v }));
+  }
+  const panels = LIQ_PANELS
+    .map(p => ({ ...p, lines: p.lines.filter(l => pts[l.key]?.length) }))
+    .filter(p => p.lines.length);
+  if (!panels.length) { grid.innerHTML = '<div class="yc-loading">데이터 없음</div>'; return; }
+
+  // 모든 패널이 같은 가로 범위를 쓰도록 고정 → 크로스헤어가 같은 날짜를 가리킴
+  const xMin = new Date(data.start + 'T00:00:00').getTime();
+  const xMax = Math.max(...Object.values(pts).map(a => a[a.length - 1].x));
+
+  liqCharts.forEach(c => c.destroy());
+  liqCharts = [];
+
+  grid.innerHTML = panels.map(p => `
+    <div class="mc-panel">
+      <div class="mc-panel-head">
+        ${p.lines.map(l => `<span class="mc-panel-dot" style="background:${l.color}"></span>`).join('')}
+        <span class="mc-panel-title">${p.title}</span>
+        <button type="button" class="sa-help-icon liq-help-icon" data-liq-help="${p.id}" aria-label="${p.title} 설명 보기">ⓘ</button>
+        <span class="mc-panel-cur" id="liqCur-${p.id}"></span>
+        <span class="mc-panel-val" id="liqVal-${p.id}"></span>
+      </div>
+      <div class="mc-panel-chart" style="height:110px"><canvas id="liqCanvas-${p.id}"></canvas></div>
+    </div>`).join('');
+  closeSaHelpTooltip(); // 기간 변경으로 패널을 다시 그리면 이전 아이콘이 사라지므로 열린 설명도 닫음
+  grid.querySelectorAll('.liq-help-icon').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      toggleSaHelpTooltip(btn, LIQ_HELP[btn.dataset.liqHelp] || '');
+    });
+  });
+
+  const crosshair = {
+    id: 'liqCrosshair',
+    afterDraw(chart) {
+      if (chart.$liqHoverX == null) return;
+      const x = chart.scales.x.getPixelForValue(chart.$liqHoverX);
+      const { ctx: c, chartArea } = chart;
+      if (x < chartArea.left || x > chartArea.right) return;
+      c.save();
+      c.beginPath();
+      c.moveTo(x, chartArea.top);
+      c.lineTo(x, chartArea.bottom);
+      c.lineWidth = 1;
+      c.strokeStyle = 'rgba(255,255,255,0.35)';
+      c.setLineDash([4, 4]);
+      c.stroke();
+      c.restore();
+    },
+  };
+
+  function syncHover(t) {
+    liqCharts.forEach(chart => {
+      chart.$liqHoverX = t;
+      const active = [];
+      if (t != null) {
+        chart.data.datasets.forEach((ds, di) => {
+          const i = liqIndexAt(ds.data, t);
+          if (i >= 0) active.push({ datasetIndex: di, index: i });
+        });
+      }
+      chart.setActiveElements(active);
+      if (active.length) {
+        const pt = chart.getDatasetMeta(active[0].datasetIndex).data[active[0].index];
+        chart.tooltip.setActiveElements(active, { x: pt.x, y: pt.y });
+      } else {
+        chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+      }
+      chart.update('none');
+    });
+  }
+
+  panels.forEach((p, i) => {
+    const isLast = i === panels.length - 1;
+    const main = pts[p.lines[0].key];
+    const last = main[main.length - 1].y;
+
+    const curEl = document.getElementById(`liqCur-${p.id}`);
+    const valEl = document.getElementById(`liqVal-${p.id}`);
+    if (p.id === 'rates') {
+      // 현재 금리 나열 + SOFR−IORB 스프레드: 0bp 초과면 지준 부족·단기자금 경색 신호
+      curEl.textContent = p.lines.map(l => `${l.label} ${pts[l.key].at(-1).y.toFixed(2)}`).join(' · ');
+      if (pts.SOFR && pts.IORB) {
+        const bp = Math.round((pts.SOFR.at(-1).y - pts.IORB.at(-1).y) * 100);
+        valEl.textContent = `SOFR−IORB ${bp > 0 ? '+' : ''}${bp}bp`;
+        valEl.classList.add(bp > 0 ? 'down' : 'up');
+      }
+    } else {
+      const first = main[0].y;
+      const diff  = p.chg === 'bp' ? (last - first) * 100 : first ? (last - first) / Math.abs(first) * 100 : 0;
+      const sign  = diff >= 0 ? '+' : '';
+      curEl.textContent = p.fmt(last);
+      valEl.textContent = p.chg === 'bp' ? `${sign}${diff.toFixed(0)}bp` : `${sign}${diff.toFixed(1)}%`;
+      const better = p.good === 'up' ? diff > 0 : diff < 0;
+      valEl.classList.add(Math.abs(diff) < 1e-9 ? 'flat' : better ? 'up' : 'down');
+    }
+
+    const canvas = document.getElementById(`liqCanvas-${p.id}`);
+    const chart = new Chart(canvas, {
+      type: 'line',
+      data: {
+        datasets: p.lines.map(l => ({
+          label: l.label,
+          data: pts[l.key],
+          borderColor: l.color,
+          backgroundColor: 'transparent',
+          borderWidth: 1.6,
+          borderDash: l.dash || [],
+          pointRadius: 0,
+          pointHoverRadius: 3,
+          tension: 0.2,
+          fill: false,
+        })),
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        // 호버는 아래 직접 등록한 리스너로 모든 패널을 시각 기준 동기화
+        events: [],
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            displayColors: p.lines.length > 1,
+            padding: 4,
+            titleFont: { size: 9 },
+            bodyFont: { size: 9 },
+            titleMarginBottom: 2,
+            callbacks: {
+              title: items => new Date(items[0].parsed.x)
+                .toLocaleDateString('ko-KR', { year: '2-digit', month: '2-digit', day: '2-digit' }).replace(/\s/g, ''),
+              label: c => `${c.dataset.label}: ${p.fmt(c.parsed.y)}`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: 'time',
+            min: xMin,
+            max: xMax,
+            grid: { color: '#252836' },
+            ticks: { display: isLast, align: 'inner', color: '#7b7f97', maxTicksLimit: 8, font: { size: 9 } },
+            afterFit: scale => { scale.paddingLeft = 0; scale.paddingRight = 0; },
+            time: { unit: 'month', displayFormats: { month: 'yy.MM' } },
+          },
+          y: {
+            position: 'right',
+            grid: { color: '#252836' },
+            ticks: { color: '#7b7f97', font: { size: 9 }, maxTicksLimit: 4 },
+            afterFit: scale => { scale.width = 44; },
+          },
+        },
+      },
+      plugins: [crosshair],
+    });
+
+    const hoverAt = e => {
+      const pt = e.touches?.[0] ?? e;
+      const rect = canvas.getBoundingClientRect();
+      const px = pt.clientX - rect.left;
+      const { left, right } = chart.chartArea;
+      syncHover(chart.scales.x.getValueForPixel(Math.min(Math.max(px, left), right)));
+    };
+    canvas.addEventListener('mousemove', hoverAt);
+    canvas.addEventListener('mouseleave', () => syncHover(null));
+    // 모바일: 터치 드래그로 크로스헤어 이동 (차트 위에서는 스크롤 대신 크로스헤어)
+    canvas.addEventListener('touchstart', hoverAt, { passive: true });
+    canvas.addEventListener('touchmove', e => { e.preventDefault(); hoverAt(e); }, { passive: false });
+    canvas.addEventListener('touchend', () => syncHover(null));
+    canvas.addEventListener('touchcancel', () => syncHover(null));
+
+    liqCharts.push(chart);
+  });
+}
+
+function initLiquidityToggle() {
+  document.querySelectorAll('.liq-pbtn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      document.querySelectorAll('.liq-pbtn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadLiquidityChart(btn.dataset.p);
+    });
+  });
 }
 
 const YC_YIELD_SERIES = [
@@ -3762,7 +4049,9 @@ async function mmSave() {
       const res = await fetch('/api/db/settings/mindmapData', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: JSON.stringify(mmData), base_rev: mmRev }),
+        // returns(수익률)는 열 때마다 새로 받는 표시용 값 — DB에 남기면 다음에 열었을 때
+        // 갱신 전까지 며칠 전 값이 그대로 보이므로 저장에서 제외
+        body: JSON.stringify({ value: JSON.stringify(mmData, (k, v) => k === 'returns' ? undefined : v), base_rev: mmRev }),
       });
       if (res.status === 409) {
         await mmLoad();
@@ -3786,6 +4075,9 @@ function mmNotice(msg) {
   setTimeout(() => el.remove(), 4000);
 }
 
+// ticker → 이번 세션에서 받은 최신 수익률 (mmLoad로 mmData를 갈아끼워도 유지)
+const mmLiveReturns = new Map();
+
 async function mmLoad() {
   try {
     const res = await fetch('/api/db/settings/mindmapData');
@@ -3799,6 +4091,8 @@ async function mmLoad() {
   if (!mmData.categories) mmData.categories = [];
   if (!mmData.stocks)     mmData.stocks     = [];
   if (!mmData.edges)      mmData.edges      = [];
+  // DB에 예전에 저장된 수익률은 버리고, 이번 세션에서 받은 최신값만 다시 입힘
+  for (const s of mmData.stocks) s.returns = mmLiveReturns.get(s.ticker) ?? null;
 }
 
 // ── Transform ────────────────────────────────────────────────
@@ -4153,10 +4447,10 @@ function mmFmtRet(v) {
 }
 
 // 분류(카테고리) 소속 종목들의 7일 평균 수익률 — 헤더 트렌드 배지/배경에 사용
-function mmCatAvgReturn(cat) {
+function mmCatAvgReturn(cat, key = '7d') {
   const vals = mmData.stocks
     .filter(s => s.categoryId === cat.id)
-    .map(s => s.returns?.['7d'])
+    .map(s => s.returns?.[key])
     .filter(v => v != null);
   if (!vals.length) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
@@ -4190,6 +4484,7 @@ function mmMakeStockEl(stock) {
     <div class="mm-node-btns">
       <button class="mm-move-cat-btn" title="분류로 이동">📂</button>
       <button class="mm-del-btn" data-del-id="${stock.id}" data-del-type="stock" title="삭제">×</button>
+      ${mmSignalBtnHtml(stock)}
     </div>
     <div class="mm-node-main" data-click-id="${stock.id}" data-click-ticker="${stock.ticker}" data-click-name="${stock.name.replace(/"/g,'&quot;')}">
       <div class="mm-node-head">
@@ -4237,9 +4532,37 @@ function mmMakeStockEl(stock) {
     mmSave(); mmRender();
   });
 
+  mmBindSignalBtn(div, stock.id);
   mmBindHandlers(div);
   mmApplyHighlight(div);
   return div;
+}
+
+// ── 매수/매도 후보 표시: 버튼을 누를 때마다 없음 → 매수 → 매도 → 없음 순환 (DB 저장) ──
+const MM_SIGNAL_NEXT  = { '': 'buy', buy: 'sell', sell: '' };
+const MM_SIGNAL_LABEL = { '': '후보', buy: '매수', sell: '매도' };
+const MM_SIGNAL_TITLE = { '': '매수/매도 후보 표시', buy: '매수 후보 (누르면 매도 후보로)', sell: '매도 후보 (누르면 해제)' };
+
+function mmSignalBtnHtml(stock) {
+  const sig = stock.signal || '';
+  return `<button class="mm-sig-btn ${sig}" data-sig-id="${stock.id}" title="${MM_SIGNAL_TITLE[sig]}">${MM_SIGNAL_LABEL[sig]}</button>`;
+}
+
+function mmBindSignalBtn(root, stockId) {
+  const btn = root.querySelector(`.mm-sig-btn[data-sig-id="${stockId}"]`);
+  if (!btn) return;
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    // mmLoad로 mmData가 교체됐을 수 있으므로 클로저 대신 id로 현재 객체를 찾음
+    const s = mmData.stocks.find(x => x.id === stockId);
+    if (!s) return;
+    const next = MM_SIGNAL_NEXT[s.signal || ''];
+    if (next) s.signal = next; else delete s.signal;
+    btn.className = `mm-sig-btn ${next}`;
+    btn.textContent = MM_SIGNAL_LABEL[next];
+    btn.title = MM_SIGNAL_TITLE[next];
+    mmSave();
+  });
 }
 
 // ── 키워드 하이라이트: 태그·종목·분류명에 키워드가 포함되면 노란색 표시 ──
@@ -4288,6 +4611,7 @@ function mmMakeCatEl(cat) {
     <div class="mm-cat-header" style="background:${heatColor(catAvgRet)}">
       <span class="mm-drag-handle mm-cat-handle">⠿</span>
       <span class="mm-cat-name" data-click-id="${cat.id}" data-click-type="cat">${cat.name}</span>
+      <span class="mm-cat-trend" title="분류 평균 1일 수익률">${mmFmtRet(mmCatAvgReturn(cat, '1d'))}<span class="mm-cat-trend-lbl">1d</span></span>
       <span class="mm-cat-trend" title="분류 평균 7일 수익률">${mmFmtRet(catAvgRet)}<span class="mm-cat-trend-lbl">7d</span></span>
       <button class="mm-cat-del-btn mm-del-btn" data-del-id="${cat.id}" data-del-type="cat" title="분류 삭제">×</button>
     </div>
@@ -4350,7 +4674,9 @@ function mmMakeCatEl(cat) {
         <span class="mm-cs-drag-handle" title="순서 변경">⠿</span>
         <button class="mm-cs-move-btn" title="분류 변경">↔</button>
         <button class="mm-cs-del-btn mm-del-btn" data-del-id="${s.id}" data-del-type="stock" title="제거">×</button>
+        ${mmSignalBtnHtml(s)}
       </div>`;
+    mmBindSignalBtn(sEl, s.id);
 
     // Move to different category / standalone
     sEl.querySelector('.mm-cs-move-btn').addEventListener('click', async e => {
@@ -4532,6 +4858,7 @@ async function mmFetchReturns(stockId, symbol) {
       '6m': perf['6mo']  ?? null,
       '1y': perf['1y']   ?? null,
     };
+    mmLiveReturns.set(symbol, s.returns);
     // ath 요청이 실패(네트워크 오류·일시적 5xx)하면 응답이 {}로 대체되는데,
     // 그때 기존에 정상 조회됐던 값을 null로 덮어쓰지 않도록 필드 존재 여부로 판단.
     if ('drawdown_pct' in ath) s.drawdownPct = ath.drawdown_pct;
@@ -4585,7 +4912,7 @@ function mmSelectDialog(title, options) {
 
 async function mmRefreshAllReturns() {
   const stocks = mmData.stocks;
-  const limit = 3; // 동시 요청 수 제한
+  const limit = 6; // 동시 요청 수 제한
   for (let i = 0; i < stocks.length; i += limit) {
     await Promise.allSettled(stocks.slice(i, i + limit).map(s => mmFetchReturns(s.id, s.ticker)));
   }
@@ -4894,6 +5221,7 @@ async function initMindmap() {
     if (document.getElementById('mindmapView').classList.contains('hidden')) return;
     await mmLoad();
     mmRender();
+    mmRefreshAllReturns();
   });
 
 

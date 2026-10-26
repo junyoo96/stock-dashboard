@@ -340,7 +340,8 @@ header {
 }
 
 .scs-pbtn,
-.mc-pbtn {
+.mc-pbtn,
+.liq-pbtn {
   padding: 3px 10px;
   background: transparent;
   border: 1px solid var(--border);
@@ -354,7 +355,9 @@ header {
 .scs-pbtn:hover,
 .scs-pbtn.active,
 .mc-pbtn:hover,
-.mc-pbtn.active {
+.mc-pbtn.active,
+.liq-pbtn:hover,
+.liq-pbtn.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -2960,7 +2963,7 @@ main {
 
   /* ── Sector chart ── */
   .scs-chart-wrap { height: 200px; }
-  .scs-pbtn, .mc-pbtn { padding: 2px 7px; font-size: 0.72rem; }
+  .scs-pbtn, .mc-pbtn, .liq-pbtn { padding: 2px 7px; font-size: 0.72rem; }
   .mc-panel-chart { height: 66px; }
 
   /* ── Sector group ── */
@@ -4012,3 +4015,45 @@ main {
   .sa-kpi-card { padding: 10px; }
   .sa-kpi-value { font-size: 1rem; }
 }
+
+/* ── 마인드맵 매수/매도 후보 버튼 (각 종목 버튼 줄 맨 오른쪽) ──
+   버튼 줄은 hover 때만 보이지만, 매수/매도로 지정된 버튼은 항상 보여야 하므로
+   컨테이너 대신 자식 단위로 숨김 (터치 기기는 기존처럼 항상 표시) */
+.mm-node-btns, .mm-cs-actions { opacity: 1; }
+@media (hover: hover) {
+  .mm-node:not(:hover) .mm-node-btns > :not(.buy):not(.sell),
+  .mm-cat-stock:not(:hover) .mm-cs-actions > :not(.buy):not(.sell) { opacity: 0; }
+}
+
+.mm-sig-btn {
+  height: 18px;
+  padding: 0 5px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card-bg);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: opacity 0.15s;
+}
+.mm-node-btns .mm-sig-btn { height: 22px; font-size: 10px; }
+.mm-sig-btn:hover { color: var(--text); border-color: var(--muted); }
+.mm-sig-btn.buy  { background: #facc15; border-color: #facc15; color: #1a1a1a; }
+.mm-sig-btn.sell { background: #fb923c; border-color: #fb923c; color: #1a1a1a; }
+
+@media (pointer: coarse) {
+  .mm-sig-btn { min-width: 30px; height: 24px; font-size: 10px; }
+}
+
+/* 유동성 모니터: 단기금리 패널 헤더(금리 4개 나열)가 길어 좁은 화면에서 줄바꿈 */
+#liqGrid .mc-panel-head { flex-wrap: wrap; row-gap: 1px; max-width: calc(100% - 56px); }
+/* 패널 헤더는 차트 호버를 막지 않도록 pointer-events:none이라 ⓘ 아이콘만 클릭 가능하게 */
+.mc-panel-head .liq-help-icon { pointer-events: auto; width: 18px; height: 18px; font-size: 0.8rem; }
+@media (pointer: coarse) { .mc-panel-head .liq-help-icon { width: 24px; height: 24px; font-size: 0.9rem; } }
+/* 설명 툴팁: 지표 설명의 줄바꿈(\n) 반영 */
+.sa-help-tooltip { white-space: pre-line; max-width: 300px; }

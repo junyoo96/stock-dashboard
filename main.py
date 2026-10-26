@@ -1059,6 +1059,30 @@ def _fetch_yf_daily_closes(symbol: str, period: str) -> list:
         return []
 
 
+async def _fetch_fear_greed_history() -> dict:
+    """CNN Fear & Greed 일별 값 {YYYY-MM-DD: 0~100}. 5년치를 한 번에 받아 1시간 캐시.
+    (CNN은 2021년 이전 시작일을 주면 500을 반환하므로 최근 5년으로 제한)"""
+    cached = cache_get("fear-greed-hist", 3600)
+    if cached is not None:
+        return cached
+    start = (datetime.date.today() - datetime.timedelta(days=5 * 365 + 10)).isoformat()
+    url = f"https://production.dataviz.cnn.io/index/fearandgreed/graphdata/{start}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+        'Referer': 'https://edition.cnn.com/',
+    }
+    async with httpx.AsyncClient(timeout=20, headers=headers) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        rows = r.json()['fear_and_greed_historical']['data']
+    data = {
+        datetime.datetime.fromtimestamp(row['x'] / 1000, datetime.timezone.utc).strftime('%Y-%m-%d'): float(row['y'])
+        for row in rows if row.get('y') is not None
+    }
+    cache_set("fear-greed-hist", data)
+    return data
+
+
 async def _fetch_macro_correlation(period: str) -> dict:
     limit = _MACRO_CORR_LIMIT.get(period, 252)
     loop = asyncio.get_running_loop()
@@ -1068,7 +1092,10 @@ async def _fetch_macro_correlation(period: str) -> dict:
         loop.run_in_executor(executor, _fetch_yf_daily_closes, sym, period)
         for sym in _MACRO_CORR_YF_SYMBOLS.values()
     ]
-    results = await asyncio.gather(*fred_tasks, *yf_tasks, return_exceptions=True)
+    fng_task = _fetch_fear_greed_history()
+    results = await asyncio.gather(*fred_tasks, *yf_tasks, fng_task, return_exceptions=True)
+    fng = results[-1] if not isinstance(results[-1], Exception) else {}
+    results = results[:-1]
 
     keys = ['DGS2', 'DGS10', *_MACRO_CORR_YF_SYMBOLS.keys()]
     raw = {
@@ -1086,6 +1113,19 @@ async def _fetch_macro_correlation(period: str) -> dict:
 
     # 소형 차트 그리드에서 각자 고유 단위/축으로 그리므로 정규화 없이 원본값 반환
     series = {key: [round(m[d], 4) for d in common] for key, m in maps.items()}
+
+    # Fear & Greed는 부가 지표 — 조회 실패해도 나머지 차트는 그대로 보여주고,
+    # CNN 쪽에 빠진 날짜가 있으면 공통 날짜가 줄지 않도록 직전 값으로 채움
+    if fng:
+        fng_dates = sorted(fng)
+        vals, j, last = [], 0, None
+        for d in common:
+            while j < len(fng_dates) and fng_dates[j] <= d:
+                last = fng[fng_dates[j]]
+                j += 1
+            vals.append(round(last, 1) if last is not None else None)
+        if any(v is not None for v in vals):
+            series['FNG'] = vals
 
     return {'dates': common, 'series': series}
 
@@ -1278,6 +1318,43 @@ async def get_tga_history(period: str = "2y"):
         return cached
     data = await _fetch_fred_series('WTREGEN', limit)
     cache_set(cache_key, data)
+    return data
+
+
+# 유동성 모니터: Fed 총자산·지급준비금·TGA·단기자금시장 금리·신용스프레드
+# FRED id → 표시 단위 환산 배수 (WALCL·WRESBAL은 백만달러→조달러, WTREGEN은 백만달러→십억달러)
+_LIQUIDITY_SERIES = {
+    'WALCL': 1e-6, 'WRESBAL': 1e-6, 'WTREGEN': 1e-3,
+    'SOFR': 1, 'EFFR': 1, 'IORB': 1, 'RRPONTSYAWARD': 1,
+    'BAMLH0A0HYM2': 1, 'BAMLC0A0CM': 1,
+}
+_LIQUIDITY_DAYS = {'1y': 365, '2y': 730, '3y': 1095, '5y': 1826}
+
+
+@app.get("/api/liquidity")
+async def get_liquidity(period: str = "1y"):
+    if period not in _LIQUIDITY_DAYS:
+        period = '1y'
+    cache_key = f"liquidity:{period}"
+    cached = cache_get(cache_key, 3600)
+    if cached is not None:
+        return cached
+    start = (datetime.date.today() - datetime.timedelta(days=_LIQUIDITY_DAYS[period])).isoformat()
+    ids = list(_LIQUIDITY_SERIES)
+    # 행 수가 아니라 시작일로 자르므로 limit은 넉넉하게 (주간·일간 시리즈 혼재)
+    results = await asyncio.gather(*[_fetch_fred_series(sid, 100000) for sid in ids], return_exceptions=True)
+    series = {}
+    for sid, rows in zip(ids, results):
+        if isinstance(rows, Exception):
+            continue
+        mult = _LIQUIDITY_SERIES[sid]
+        pts = [{'t': r['t'], 'v': round(r['v'] * mult, 4)} for r in rows if r['t'] >= start]
+        if pts:
+            series[sid] = pts
+    data = {'start': start, 'series': series}
+    # 일부 시리즈가 FRED 일시 오류로 빠졌으면 1시간 동안 빈 패널이 고정되지 않도록 캐시하지 않음
+    if len(series) == len(ids):
+        cache_set(cache_key, data)
     return data
 
 

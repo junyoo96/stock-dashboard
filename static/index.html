@@ -12,7 +12,7 @@
   </script>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>주식 대시보드</title>
-  <link rel="stylesheet" href="style.css?v=119" />
+  <link rel="stylesheet" href="style.css?v=122" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -150,7 +150,7 @@
     <div class="mav-section" data-section="macro-correlation">
       <div class="mav-sec-header">
         <span class="mav-drag-handle">⠿</span>
-        <span class="mav-sec-title">국채금리·원유·주요지수 상관관계 <span class="mav-sec-sub">(각자 고유 단위, 동일 시간축)</span></span>
+        <span class="mav-sec-title">국채금리·원유·주요지수·Fear &amp; Greed 상관관계 <span class="mav-sec-sub">(각자 고유 단위, 동일 시간축)</span></span>
       </div>
       <div class="scs-periods">
         <button class="mc-pbtn" data-p="1mo">1개월</button>
@@ -203,6 +203,20 @@
         <span id="tgaStatusBadge" class="tga-badge"></span>
       </div>
       <div id="tgaChartRow"></div>
+    </div>
+
+    <div class="mav-section" data-section="liquidity">
+      <div class="mav-sec-header">
+        <span class="mav-drag-handle">⠿</span>
+        <span class="mav-sec-title">유동성 모니터 <span class="mav-sec-sub">Fed 총자산·지급준비금·TGA·단기금리·신용스프레드 (동일 시간축, 초록=유동성 우호 / 빨강=악화)</span></span>
+      </div>
+      <div class="scs-periods">
+        <button class="liq-pbtn active" data-p="1y">1년</button>
+        <button class="liq-pbtn" data-p="2y">2년</button>
+        <button class="liq-pbtn" data-p="3y">3년</button>
+        <button class="liq-pbtn" data-p="5y">5년</button>
+      </div>
+      <div id="liqGrid" class="mc-grid"><div class="yc-loading">로딩 중...</div></div>
     </div>
   </div>
 
@@ -496,6 +510,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=152"></script>
+  <script src="app.js?v=158"></script>
 </body>
 </html>
